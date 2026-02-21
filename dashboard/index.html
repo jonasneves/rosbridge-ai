@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f0efeb">
+  <title>ROS AI Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="logo.jpg">
+  <meta property="og:title" content="ROS AI Dashboard">
+  <meta property="og:description" content="Inspect and control ROS robots from the browser">
+  <meta property="og:image" content="logo.jpg">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js" as="script">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js" as="script">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" as="script">
+</head>
+<body>
+<div class="app">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <img src="logo.jpg" class="topbar-logo" alt="ROS AI Dashboard logo" width="28" height="28">
+    <span class="topbar-title">ROS AI Dashboard</span>
+    <div class="status-row">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Disconnected</span>
+    </div>
+    <div class="topbar-spacer"></div>
+    <input
+      class="url-input"
+      id="url-input"
+      type="text"
+      value="ws://localhost:9090"
+      aria-label="rosbridge WebSocket URL"
+      spellcheck="false"
+    >
+    <button class="btn btn-primary btn-sm" id="connect-btn">Connect</button>
+    <button class="btn btn-sm" id="robot-view-btn" aria-label="Open robot view in new tab">Robot View</button>
+    <button class="btn btn-sm" id="chat-panel-toggle" aria-expanded="false" aria-controls="chat-panel">AI Chat</button>
+  </header>
+
+  <!-- Body -->
+  <div class="body">
+
+    <!-- Sidebar -->
+    <div class="sidebar-wrap">
+      <div class="sidebar-filter-row">
+        <input
+          class="sidebar-filter-input"
+          id="sidebar-filter"
+          type="search"
+          placeholder="Filter…"
+          aria-label="Filter topics, nodes, services"
+          spellcheck="false"
+        >
+      </div>
+      <nav class="sidebar" aria-label="ROS entities">
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <button class="sidebar-heading" id="section-toggle-topics" data-section="topics" aria-expanded="true">Topics</button>
+            <span class="sidebar-heading-chevron"></span>
+          </div>
+          <div id="topics-list">
+            <div class="sidebar-empty">Not connected</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <button class="sidebar-heading" id="section-toggle-nodes" data-section="nodes" aria-expanded="true">Nodes</button>
+            <button class="sys-filter-btn" id="node-sys-filter-btn" title="Hide system nodes" aria-pressed="false">sys</button>
+            <span class="sidebar-heading-chevron"></span>
+          </div>
+          <div id="nodes-list">
+            <div class="sidebar-empty">Not connected</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <button class="sidebar-heading" id="section-toggle-services" data-section="services" aria-expanded="true">Services</button>
+            <button class="sys-filter-btn" id="sys-filter-btn" title="Hide system services" aria-pressed="false">sys</button>
+            <span class="sidebar-heading-chevron"></span>
+          </div>
+          <div id="services-list">
+            <div class="sidebar-empty">Not connected</div>
+          </div>
+        </div>
+
+      </nav>
+      <div class="webmcp-badge-wrap">
+        <button class="webmcp-badge" id="webmcp-badge" type="button">WebMCP: checking…</button>
+        <div class="webmcp-popover" id="webmcp-popover" hidden role="dialog" aria-label="Registered WebMCP tools"></div>
+      </div>
+    </div>
+
+    <!-- Main column -->
+    <div class="main-col">
+
+      <!-- Pinned topics strip -->
+      <div class="pinned-row" id="pinned-row" hidden aria-label="Pinned topics"></div>
+
+      <!-- Detail panel -->
+      <main class="main" id="main-panel" aria-live="polite">
+        <div class="panel-placeholder" id="panel-placeholder">
+          <div>Connect to rosbridge to get started.</div>
+        </div>
+      </main>
+
+      <!-- Tool call log -->
+      <div class="log-panel" id="log-panel">
+        <button class="log-toggle" id="log-toggle" aria-expanded="false" aria-controls="log-body">
+          <span class="log-toggle-label">Tool Log</span>
+          <span class="log-badge" id="tool-log-badge" hidden>0</span>
+          <span class="log-toggle-chevron" id="log-chevron">▼</span>
+        </button>
+        <div class="log-body" id="log-body" hidden>
+          <div class="log-list" id="tool-log-list"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- AI Chat panel -->
+    <aside class="chat-panel" id="chat-panel" hidden>
+      <div class="chat-header">
+        <span class="chat-header-title">AI Chat</span>
+        <button class="btn btn-sm" id="chat-clear">Clear</button>
+      </div>
+      <div class="chat-config">
+        <select class="chat-model-select" id="chat-model-select" aria-label="Model">
+          <option value="anthropic:claude-sonnet-4-6">Claude Sonnet 4.6</option>
+          <option value="github:openai/gpt-4.1">GitHub · GPT-4.1</option>
+          <option value="github:openai/gpt-4.1-mini">GitHub · GPT-4.1 mini</option>
+          <option value="github:openai/gpt-4.1-nano">GitHub · GPT-4.1 nano</option>
+          <option value="github:openai/gpt-5">GitHub · GPT-5</option>
+          <option value="github:openai/gpt-5-mini">GitHub · GPT-5 mini</option>
+        </select>
+      </div>
+      <div class="chat-auth-bar" id="chat-claude-bar">
+        <input type="password" class="chat-auth-input" id="chat-api-key" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key">
+        <button class="btn btn-sm" id="chat-key-save">Save</button>
+      </div>
+      <div class="chat-auth-bar" id="chat-github-bar">
+        <!-- rendered by updateGitHubAuthBar() -->
+      </div>
+      <div class="github-notice" id="github-notice" hidden>
+        <span>Tool calls and responses may be less reliable than Claude.</span>
+        <button class="github-notice-dismiss" id="github-notice-dismiss" aria-label="Dismiss">✕</button>
+      </div>
+      <div class="chat-messages" id="chat-messages" aria-live="polite" aria-label="Chat messages"></div>
+      <div class="chat-input-area">
+        <textarea class="chat-input" id="chat-input" placeholder="Ask about your ROS setup… (⌘↵ to send)" rows="3" aria-label="Chat message"></textarea>
+        <div class="chat-input-row">
+          <button class="btn btn-primary btn-sm" id="chat-send">Send</button>
+          <button class="btn btn-sm" id="chat-abort" hidden>Stop</button>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="ros-webmcp.js"></script>
+</body>
+</html>
