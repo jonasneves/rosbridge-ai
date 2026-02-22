@@ -70,7 +70,7 @@ function scheduleReconnect() {
     document.getElementById("status-text").textContent = "Disconnected";
     return;
   }
-  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, state.reconnect.attempts), RECONNECT_CAP_MS);
+  const delay = Math.min(RECONNECT_BASE_MS * 2 ** state.reconnect.attempts, RECONNECT_CAP_MS);
   state.reconnect.attempts++;
   document.getElementById("status-text").textContent =
     `Reconnecting in ${Math.round(delay / 1000)}s… (${state.reconnect.attempts}/${RECONNECT_MAX})`;
@@ -193,18 +193,19 @@ function isSystemService(name) {
     SYSTEM_SERVICE_SUFFIXES.some(s => name.endsWith(s));
 }
 
+function countVisible(items, kind) {
+  const sf = SYSTEM_FILTERS[kind];
+  return (sf && state[sf.key]) ? items.filter(n => !sf.fn(n)).length : items.length;
+}
+
 function renderMainPlaceholder() {
   const main = document.getElementById("main-panel");
   if (!state.connected) {
     main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>Connect to rosbridge to get started.</div></div>`;
     return;
   }
-  const nodeCount = state.hideSystemNodes
-    ? state.nodes.filter(n => !isSystemNode(n)).length
-    : state.nodes.length;
-  const svcCount = state.hideSystemServices
-    ? state.services.filter(s => !isSystemService(s)).length
-    : state.services.length;
+  const nodeCount = countVisible(state.nodes, "node");
+  const svcCount = countVisible(state.services, "service");
   main.innerHTML = `
     <div class="conn-summary">
       <div class="conn-summary-title">Connected</div>
@@ -242,6 +243,11 @@ function renderSidebar() {
   }
 }
 
+const SYSTEM_FILTERS = {
+  node:    { key: "hideSystemNodes",    fn: isSystemNode },
+  service: { key: "hideSystemServices", fn: isSystemService },
+};
+
 function renderList(containerId, items, kind) {
   const container = document.getElementById(containerId);
   container.innerHTML = "";
@@ -250,11 +256,9 @@ function renderList(containerId, items, kind) {
     ? items.filter(n => n.toLowerCase().includes(state.filter.toLowerCase()))
     : items;
 
-  if (kind === "node" && state.hideSystemNodes) {
-    filtered = filtered.filter(n => !isSystemNode(n));
-  }
-  if (kind === "service" && state.hideSystemServices) {
-    filtered = filtered.filter(n => !isSystemService(n));
+  const sf = SYSTEM_FILTERS[kind];
+  if (sf && state[sf.key]) {
+    filtered = filtered.filter(n => !sf.fn(n));
   }
 
   if (!filtered.length) {
@@ -488,18 +492,21 @@ async function doSubscribeOnce(topic, msgType) {
   }
 }
 
+function setWatchUI(watching) {
+  const btnWatch = document.getElementById("btn-watch");
+  const btnStop = document.getElementById("btn-stop-watch");
+  const indicator = document.getElementById("watch-indicator");
+  if (btnWatch) btnWatch.style.display = watching ? "none" : "";
+  if (btnStop) btnStop.style.display = watching ? "" : "none";
+  if (indicator) indicator.style.display = watching ? "" : "none";
+}
+
 function startWatching(topic, msgType) {
   stopWatching();
   const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
   rosTopic.subscribe(msg => showMsgCard(msg));
   state.watching = rosTopic;
-
-  const btnWatch = document.getElementById("btn-watch");
-  const btnStop = document.getElementById("btn-stop-watch");
-  const indicator = document.getElementById("watch-indicator");
-  if (btnWatch) btnWatch.style.display = "none";
-  if (btnStop) btnStop.style.display = "";
-  if (indicator) indicator.style.display = "";
+  setWatchUI(true);
 }
 
 function stopWatching() {
@@ -508,12 +515,7 @@ function stopWatching() {
     state.watching.unsubscribe();
     state.watching = null;
   }
-  const btnWatch = document.getElementById("btn-watch");
-  const btnStop = document.getElementById("btn-stop-watch");
-  const indicator = document.getElementById("watch-indicator");
-  if (btnWatch) btnWatch.style.display = "";
-  if (btnStop) btnStop.style.display = "none";
-  if (indicator) indicator.style.display = "none";
+  setWatchUI(false);
 }
 
 function showMsgCard(msg) {
@@ -596,19 +598,26 @@ function renderPinnedRow() {
 
   for (const [topic, entry] of pinned) {
     const isPose = isPoseTopic(entry.msgType);
+    const id = cssId(topic);
+    const safe = escHtml(topic);
+
+    let bodyHtml;
+    if (isPose) {
+      bodyHtml = `<canvas class="pose-canvas" id="pose-canvas-${id}" width="180" height="160" aria-label="Pose visualization for ${safe}"></canvas>`;
+    } else {
+      const msg = entry.lastMsg ? escHtml(JSON.stringify(entry.lastMsg, null, 2)) : "Waiting…";
+      bodyHtml = `<div class="watch-card-msg" id="watch-msg-${id}">${msg}</div>`;
+    }
+
     const card = document.createElement("div");
     card.className = "watch-card";
-    card.id = `watch-card-${cssId(topic)}`;
-
+    card.id = `watch-card-${id}`;
     card.innerHTML = `
       <div class="watch-card-header">
-        <span class="watch-card-name" title="${escHtml(topic)}">${escHtml(topic)}</span>
-        <button class="watch-card-unpin" aria-label="Unpin ${escHtml(topic)}">✕</button>
+        <span class="watch-card-name" title="${safe}">${safe}</span>
+        <button class="watch-card-unpin" aria-label="Unpin ${safe}">✕</button>
       </div>
-      ${isPose
-        ? `<canvas class="pose-canvas" id="pose-canvas-${cssId(topic)}" width="180" height="160" aria-label="Pose visualization for ${escHtml(topic)}"></canvas>`
-        : `<div class="watch-card-msg" id="watch-msg-${cssId(topic)}">${entry.lastMsg ? escHtml(JSON.stringify(entry.lastMsg, null, 2)) : "Waiting…"}</div>`
-      }
+      ${bodyHtml}
     `;
 
     card.querySelector(".watch-card-unpin").addEventListener("click", () => unpinTopic(topic));
@@ -1126,9 +1135,8 @@ function registerWebMCPTools() {
   const badge = document.getElementById("webmcp-badge");
 
   if (!navigator.modelContext) {
-    badge.className = "webmcp-badge";
-    badge.textContent = "WebMCP · inactive";
     console.info("[WebMCP] navigator.modelContext not available — tools not registered");
+    updateWebMCPBadge(badge, 0);
     return;
   }
 
@@ -1140,18 +1148,7 @@ function registerWebMCPTools() {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.parameters,
-        execute: async (params) => {
-          const t0 = Date.now();
-          const id = ++_toolLogId;
-          let result;
-          try {
-            result = await tool.handler(params);
-          } catch (err) {
-            result = { error: String(err) };
-          }
-          appendToolLog({ id, toolName: tool.name, params, result, ts: new Date(), durationMs: Date.now() - t0 });
-          return result;
-        },
+        execute: (params) => chatExecuteToolCall(tool.name, params),
       });
       registered++;
     } catch (err) {
@@ -1161,15 +1158,17 @@ function registerWebMCPTools() {
   }
 
   if (registered === 0) {
-    badge.className = "webmcp-badge";
-    badge.textContent = "WebMCP · inactive";
     console.error("[WebMCP] No tools registered. Last error:", lastError);
   } else {
-    _webmcpActive = true;
-    badge.className = "webmcp-badge ok";
-    badge.textContent = `WebMCP · ${registered} tools`;
     console.info(`[WebMCP] Registered ${registered} tools`);
   }
+  updateWebMCPBadge(badge, registered);
+}
+
+function updateWebMCPBadge(badge, registered) {
+  _webmcpActive = registered > 0;
+  badge.className = "webmcp-badge" + (_webmcpActive ? " ok" : "");
+  badge.textContent = _webmcpActive ? `WebMCP · ${registered} tools` : "WebMCP · inactive";
 }
 
 // ── Tool call log ─────────────────────────────────────────────────────────────
@@ -1225,7 +1224,11 @@ async function replayToolCall(entry) {
   const tool = TOOLS.find(t => t.name === entry.toolName);
   if (!tool) { toast(`Tool "${entry.toolName}" not found`, "error"); return; }
   const result = await chatExecuteToolCall(entry.toolName, entry.params);
-  toast(result.error ? `Replay failed: ${result.error}` : `Replayed ${entry.toolName}`, result.error ? "error" : "ok");
+  if (result.error) {
+    toast(`Replay failed: ${result.error}`, "error");
+  } else {
+    toast(`Replayed ${entry.toolName}`, "ok");
+  }
 }
 
 // ── UI helpers ─────────────────────────────────────────────────────────────────
@@ -1255,6 +1258,11 @@ function chipList(items) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
+function clearChatHistory() {
+  chatState.convMsgs = [];
+  document.getElementById("chat-messages").innerHTML = "";
+}
+
 const GITHUB_CLIENT_ID = "Ov23lioKDt8Os7hdiSEh";
 const CORS_PROXY_URL = "https://cors-proxy.jonasneves.workers.dev";
 const OAUTH_CALLBACK_ORIGIN = "https://neevs.io";
@@ -1281,8 +1289,7 @@ function initChat() {
   sel.addEventListener("change", () => {
     localStorage.setItem("webmcp-chat-model", sel.value);
     applyModelSelection(sel.value);
-    chatState.convMsgs = [];
-    document.getElementById("chat-messages").innerHTML = "";
+    clearChatHistory();
   });
 
   document.getElementById("chat-key-save").addEventListener("click", () => {
@@ -1296,10 +1303,7 @@ function initChat() {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendChatMsg(); }
   });
   document.getElementById("chat-abort").addEventListener("click", () => chatState.abortCtrl?.abort());
-  document.getElementById("chat-clear").addEventListener("click", () => {
-    chatState.convMsgs = [];
-    document.getElementById("chat-messages").innerHTML = "";
-  });
+  document.getElementById("chat-clear").addEventListener("click", clearChatHistory);
   document.addEventListener("keydown", (e) => {
     const panel = document.getElementById("chat-panel");
     if (!panel || panel.hidden) return;
@@ -1330,11 +1334,10 @@ function applyModelSelection(value) {
   const [provider, ...rest] = value.split(":");
   chatState.provider = provider;
   chatState.model = rest.join(":");
-  const isGitHub = chatState.provider === "github";
+  const isGitHub = provider === "github";
   document.getElementById("chat-claude-bar").style.display = isGitHub ? "none" : "";
   document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
-  const noticeDismissed = !!localStorage.getItem("webmcp-github-notice-dismissed");
-  document.getElementById("github-notice").hidden = !isGitHub || noticeDismissed;
+  document.getElementById("github-notice").hidden = !isGitHub || !!localStorage.getItem("webmcp-github-notice-dismissed");
   if (isGitHub) updateGitHubAuthBar();
 }
 
@@ -1413,8 +1416,7 @@ function updateGitHubAuthBar() {
     disconnectBtn.addEventListener("click", () => {
       chatState.githubAuth = null;
       localStorage.removeItem("webmcp-gh-auth");
-      chatState.convMsgs = [];
-      document.getElementById("chat-messages").innerHTML = "";
+      clearChatHistory();
       updateGitHubAuthBar();
     });
     bar.appendChild(label);
@@ -1511,7 +1513,7 @@ async function sendChatMsg() {
       await runConversationClaude(key, chatState.abortCtrl.signal);
     }
   } catch (err) {
-    if (err.name !== "AbortError") { hideChatSpinner(); appendChatMsg("error", err.message); }
+    handleStreamError(err);
   } finally {
     chatState.busy = false;
     chatState.abortCtrl = null;
@@ -1550,9 +1552,7 @@ async function runConversationClaude(apiKey, signal) {
       }
       body = res.body;
     } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", err.message);
+      handleStreamError(err);
       return;
     }
 
@@ -1614,9 +1614,7 @@ async function runConversationClaude(apiKey, signal) {
         }
       }
     } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", "Stream error: " + err.message);
+      handleStreamError(err, "Stream error: ");
       return;
     }
 
@@ -1695,9 +1693,7 @@ async function runConversationGitHub(token, signal) {
       }
       body = res.body;
     } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", err.message);
+      handleStreamError(err);
       return;
     }
 
@@ -1729,21 +1725,19 @@ async function runConversationGitHub(token, signal) {
 
         if (delta.tool_calls) {
           for (const tc of delta.tool_calls) {
-            if (!tcMap[tc.index]) tcMap[tc.index] = { id: "", name: "", arguments: "", _shown: false };
-            if (tc.id) tcMap[tc.index].id = tc.id;
-            if (tc.function?.name) tcMap[tc.index].name = tc.function.name;
-            if (tc.function?.arguments) tcMap[tc.index].arguments += tc.function.arguments;
-            if (!tcMap[tc.index]._shown && tcMap[tc.index].id && tcMap[tc.index].name) {
-              tcMap[tc.index]._shown = true;
-              appendChatToolCall(tcMap[tc.index].id, tcMap[tc.index].name);
+            const entry = tcMap[tc.index] ??= { id: "", name: "", arguments: "", _shown: false };
+            if (tc.id) entry.id = tc.id;
+            if (tc.function?.name) entry.name = tc.function.name;
+            if (tc.function?.arguments) entry.arguments += tc.function.arguments;
+            if (!entry._shown && entry.id && entry.name) {
+              entry._shown = true;
+              appendChatToolCall(entry.id, entry.name);
             }
           }
         }
       }
     } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", "Stream error: " + err.message);
+      handleStreamError(err, "Stream error: ");
       return;
     }
 
@@ -1882,6 +1876,14 @@ function hideChatSpinner() {
   document.getElementById("chat-spinner")?.remove();
 }
 
+/** Hide spinner and show error message (silently ignores AbortError). */
+function handleStreamError(err, prefix = "") {
+  hideChatSpinner();
+  if (err.name !== "AbortError") {
+    appendChatMsg("error", prefix + err.message);
+  }
+}
+
 function scrollChatBottom() {
   const el = document.getElementById("chat-messages");
   if (el) el.scrollTop = el.scrollHeight;
@@ -1919,9 +1921,9 @@ for (const btn of document.querySelectorAll("[data-section]")) {
 }
 
 function initSysFilterBtn(btnId, stateKey) {
-  document.getElementById(btnId).addEventListener("click", () => {
+  const btn = document.getElementById(btnId);
+  btn.addEventListener("click", () => {
     state[stateKey] = !state[stateKey];
-    const btn = document.getElementById(btnId);
     btn.setAttribute("aria-pressed", String(state[stateKey]));
     btn.classList.toggle("active", state[stateKey]);
     renderSidebar();
