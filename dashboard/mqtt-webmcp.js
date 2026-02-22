@@ -49,13 +49,29 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function prettyJson(str) {
+  try { return JSON.stringify(JSON.parse(str), null, 2); }
+  catch { return str; }
+}
+
+function isConnected() {
+  return !!(state.mqttClient && state.connected);
+}
+
+function trackTopic(topic) {
+  if (state.seenTopics.includes(topic)) return false;
+  state.seenTopics.push(topic);
+  renderSidebar();
+  if (!state.selected) renderMainPlaceholder();
+  return true;
+}
+
 function attachJsonFormatter(id) {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener("blur", () => {
     const val = el.value.trim();
-    if (!val) return;
-    try { el.value = JSON.stringify(JSON.parse(val), null, 2); } catch { /* leave as-is */ }
+    if (val) el.value = prettyJson(val);
   });
 }
 
@@ -120,21 +136,13 @@ function connect(url) {
     if (topic.startsWith("devices/")) {
       try {
         const { topics } = JSON.parse(msg);
-        let changed = false;
-        for (const t of topics) {
-          if (!state.seenTopics.includes(t)) { state.seenTopics.push(t); changed = true; }
-        }
-        if (changed) { renderSidebar(); if (!state.selected) renderMainPlaceholder(); }
+        for (const t of topics) trackTopic(t);
       } catch { /* ignore malformed announcements */ }
       return;
     }
 
     // Track seen topics
-    if (!state.seenTopics.includes(topic)) {
-      state.seenTopics.push(topic);
-      renderSidebar();
-      if (!state.selected) renderMainPlaceholder();
-    }
+    trackTopic(topic);
 
     // Persistent listeners (e.g. duration-based subscriptions)
     if (state.topicListeners[topic]) {
@@ -450,11 +458,7 @@ function showMsgCard(msg) {
   const card = document.getElementById("last-msg");
   if (!card) return;
   card.className = "data-card";
-  try {
-    card.textContent = JSON.stringify(JSON.parse(msg), null, 2);
-  } catch {
-    card.textContent = msg;
-  }
+  card.textContent = prettyJson(msg);
 }
 
 async function doPublish(topic) {
@@ -478,7 +482,7 @@ function togglePin(topic) {
 }
 
 function pinTopic(topic) {
-  if (state.pinnedTopics[topic] || !state.connected) return;
+  if (state.pinnedTopics[topic] || !isConnected()) return;
   state.pinnedTopics[topic] = { lastMsg: null };
   renderPinnedRow();
   renderSidebar();
@@ -527,11 +531,7 @@ function updateWatchCard(topic) {
   if (!entry) return;
   const el = document.getElementById(`watch-msg-${cssId(topic)}`);
   if (el && entry.lastMsg !== null) {
-    try {
-      el.textContent = JSON.stringify(JSON.parse(entry.lastMsg), null, 2);
-    } catch {
-      el.textContent = entry.lastMsg;
-    }
+    el.textContent = prettyJson(entry.lastMsg);
   }
 }
 
@@ -539,7 +539,7 @@ function updateWatchCard(topic) {
 
 function subscribeOnce(topic, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
-    if (!state.mqttClient || !state.connected) { reject(new Error("Not connected")); return; }
+    if (!isConnected()) return reject(new Error("Not connected"));
     let cb;
     const timer = setTimeout(() => {
       if (state.onceCallbacks[topic]) {
@@ -554,7 +554,7 @@ function subscribeOnce(topic, timeoutMs = 5000) {
 }
 
 async function subscribeForDuration(topic, durationSec, maxMessages = 100) {
-  if (!state.mqttClient || !state.connected) throw new Error("Not connected");
+  if (!isConnected()) throw new Error("Not connected");
   const collected = [];
   if (!state.topicListeners[topic]) state.topicListeners[topic] = new Set();
 
@@ -647,7 +647,7 @@ const TOOLS = [
       required: ["topic", "payload"],
     },
     handler: async ({ topic, payload }) => {
-      if (!state.mqttClient || !state.connected) throw new Error("Not connected");
+      if (!isConnected()) throw new Error("Not connected");
       state.mqttClient.publish(topic, payload);
       return { published: true, topic, payload };
     },
@@ -665,7 +665,7 @@ const TOOLS = [
       required: ["topic", "payloads", "durations"],
     },
     handler: async ({ topic, payloads, durations }) => {
-      if (!state.mqttClient || !state.connected) throw new Error("Not connected");
+      if (!isConnected()) throw new Error("Not connected");
       for (let i = 0; i < payloads.length; i++) {
         state.mqttClient.publish(topic, payloads[i]);
         await sleep((durations[i] || 0) * 1000);
@@ -964,7 +964,7 @@ function getSystemPrompt() {
     "You are an AI assistant embedded in the MQTT AI Dashboard.",
     "You have access to MQTT tools to inspect and control a robot via an MQTT broker.",
   ];
-  if (state.connected) {
+  if (isConnected()) {
     lines.push(`Connected to MQTT broker at ${state.url}.`);
     lines.push(`Known topics (${state.seenTopics.length}): ${state.seenTopics.slice(0, 20).join(", ")}${state.seenTopics.length > 20 ? "…" : ""}`);
   } else {

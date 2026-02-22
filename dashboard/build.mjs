@@ -13,13 +13,13 @@ async function minifyAndWrite(srcFile, loader) {
 }
 
 const [jsFile, cssFile] = await Promise.all([
-  minifyAndWrite('ros-webmcp.js', 'js'),
+  minifyAndWrite('mqtt-webmcp.js', 'js'),
   minifyAndWrite('style.css', 'css'),
 ]);
 
 let html = readFileSync('index.html', 'utf8');
 html = html.replace('href="style.css"', `href="${cssFile}"`);
-html = html.replace('src="ros-webmcp.js"', `src="${jsFile}"`);
+html = html.replace('src="mqtt-webmcp.js"', `src="${jsFile}"`);
 writeFileSync('dist/index.html', html);
 
 copyFileSync('logo.jpg', 'dist/logo.jpg');
