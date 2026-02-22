@@ -63,6 +63,21 @@ function isConnected() {
   return !!(state.mqttClient && state.connected);
 }
 
+function parseHostname(url) {
+  try { return new URL(url).hostname; }
+  catch { return url; }
+}
+
+function formatBadgeCount(count) {
+  return count > 999 ? "999+" : String(count);
+}
+
+function getNamespaceCount(prefix) {
+  return state.seenTopics
+    .filter(t => t.startsWith(prefix + "/"))
+    .reduce((sum, t) => sum + (state.topicMsgCounts[t] || 0), 0);
+}
+
 function trackTopic(topic) {
   if (state.seenTopics.includes(topic)) return false;
   state.seenTopics.push(topic);
@@ -137,8 +152,7 @@ function connect(url) {
     state.connected = true;
     state.connecting = false;
     updateStatusDot(true, false);
-    const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-    document.getElementById("status-text").textContent = hostname;
+    document.getElementById("status-text").textContent = parseHostname(url);
     document.getElementById("connect-btn").textContent = "Disconnect";
     client.subscribe("#");         // passively discover all active topics
     client.subscribe("devices/#"); // device announcements (retained, replayed immediately)
@@ -214,13 +228,17 @@ function connect(url) {
   });
 }
 
+function statusDotModifier(connected, error, connecting) {
+  if (connected) return "connected";
+  if (connecting) return "connecting";
+  if (error) return "error";
+  return "";
+}
+
 function updateStatusDot(connected, error = false, connecting = false) {
   const dot = document.getElementById("status-dot");
-  let modifier = "";
-  if (connected) modifier = " connected";
-  else if (connecting) modifier = " connecting";
-  else if (error) modifier = " error";
-  dot.className = "status-dot" + modifier;
+  const modifier = statusDotModifier(connected, error, connecting);
+  dot.className = modifier ? `status-dot ${modifier}` : "status-dot";
 }
 
 // ── Sidebar rendering ─────────────────────────────────────────────────────────
@@ -253,7 +271,7 @@ function renderSidebar() {
   renderTopicList();
   const listEl = document.getElementById("topics-list");
   const btn = document.getElementById("section-toggle-topics");
-  const chevron = btn?.parentElement?.querySelector(".sidebar-heading-chevron");
+  const chevron = btn?.parentElement?.querySelector(".sidebar-chevron");
   if (listEl) listEl.hidden = state.sidebarCollapsed.topics;
   if (btn) btn.setAttribute("aria-expanded", String(!state.sidebarCollapsed.topics));
   if (chevron) chevron.classList.toggle("collapsed", state.sidebarCollapsed.topics);
@@ -309,7 +327,7 @@ function renderTopicList() {
     const badge = document.createElement("span");
     badge.className = "sidebar-msg-count";
     badge.dataset.topic = topic;
-    badge.textContent = count > 999 ? "999+" : String(count);
+    badge.textContent = formatBadgeCount(count);
     badge.hidden = count === 0;
 
     const pinBtn = document.createElement("button");
@@ -317,7 +335,10 @@ function renderTopicList() {
     pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
     pinBtn.setAttribute("aria-pressed", String(isPinned));
     pinBtn.textContent = "⊕";
-    pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(topic); });
+    pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePin(topic);
+    });
 
     row.appendChild(btn);
     row.appendChild(badge);
@@ -333,14 +354,14 @@ function renderTopicList() {
     }
 
     const isCollapsed = !!state.sidebarCollapsed[`ns:${prefix}`];
-    const groupCount = topics.reduce((sum, t) => sum + (state.topicMsgCounts[t] || 0), 0);
+    const groupCount = getNamespaceCount(prefix);
 
     const header = document.createElement("button");
     header.className = "sidebar-ns-header";
     header.setAttribute("aria-expanded", String(!isCollapsed));
 
     const chevron = document.createElement("span");
-    chevron.className = "sidebar-ns-chevron" + (isCollapsed ? " collapsed" : "");
+    chevron.className = "sidebar-chevron" + (isCollapsed ? " collapsed" : "");
 
     header.appendChild(chevron);
     header.appendChild(document.createTextNode(prefix + "/"));
@@ -348,7 +369,7 @@ function renderTopicList() {
     const nsBadge = document.createElement("span");
     nsBadge.className = "sidebar-msg-count sidebar-ns-badge";
     nsBadge.dataset.ns = prefix;
-    nsBadge.textContent = groupCount > 999 ? "999+" : String(groupCount);
+    nsBadge.textContent = formatBadgeCount(groupCount);
     nsBadge.hidden = groupCount === 0;
     header.appendChild(nsBadge);
 
@@ -386,7 +407,7 @@ function updateSidebarBadge(topic) {
   const count = state.topicMsgCounts[topic] || 0;
   const badge = document.querySelector(`.sidebar-msg-count[data-topic="${CSS.escape(topic)}"]`);
   if (badge) {
-    badge.textContent = count > 999 ? "999+" : String(count);
+    badge.textContent = formatBadgeCount(count);
     badge.hidden = false;
   }
   // Update namespace group badge
@@ -395,10 +416,7 @@ function updateSidebarBadge(topic) {
     const prefix = topic.slice(0, slash);
     const nsBadge = document.querySelector(`.sidebar-ns-badge[data-ns="${CSS.escape(prefix)}"]`);
     if (nsBadge) {
-      const groupCount = state.seenTopics
-        .filter(t => t.startsWith(prefix + "/"))
-        .reduce((sum, t) => sum + (state.topicMsgCounts[t] || 0), 0);
-      nsBadge.textContent = groupCount > 999 ? "999+" : String(groupCount);
+      nsBadge.textContent = formatBadgeCount(getNamespaceCount(prefix));
       nsBadge.hidden = false;
     }
   }
@@ -487,20 +505,16 @@ function renderTopicPanel(topic) {
   });
   renderPublishHistory(topic);
 
-  document.getElementById("repeat-checkbox").addEventListener("change", (e) => {
-    if (e.target.checked) {
+  function syncRepeatPublish() {
+    if (document.getElementById("repeat-checkbox")?.checked) {
       const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
       startContinuousPublish(topic, hz);
     } else {
       stopContinuousPublish();
     }
-  });
-  document.getElementById("repeat-hz").addEventListener("change", () => {
-    if (document.getElementById("repeat-checkbox")?.checked) {
-      const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
-      startContinuousPublish(topic, hz);
-    }
-  });
+  }
+  document.getElementById("repeat-checkbox").addEventListener("change", syncRepeatPublish);
+  document.getElementById("repeat-hz").addEventListener("change", syncRepeatPublish);
 
   attachJsonFormatter("publish-msg");
 }
@@ -565,7 +579,10 @@ async function doSubscribeOnce(topic) {
   } catch (err) {
     toast(String(err), "error");
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Subscribe once"; }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Subscribe once";
+    }
   }
 }
 
@@ -683,7 +700,10 @@ function subscribeOnce(topic, timeoutMs = 5000) {
       }
       reject(new Error(`Timeout waiting for message on ${topic}`));
     }, timeoutMs);
-    cb = (msg) => { clearTimeout(timer); resolve(msg); };
+    cb = (msg) => {
+      clearTimeout(timer);
+      resolve(msg);
+    };
     if (!state.onceCallbacks[topic]) state.onceCallbacks[topic] = [];
     state.onceCallbacks[topic].push(cb);
   });
@@ -817,11 +837,9 @@ const TOOLS = [
 let _webmcpActive = false;
 
 function registerWebMCPTools() {
-  const badge = document.getElementById("webmcp-badge");
-
   if (!navigator.modelContext) {
     console.info("[WebMCP] navigator.modelContext not available — tools not registered");
-    updateWebMCPBadge(badge, 0);
+    updateWebMCPBadge(0);
     return;
   }
 
@@ -847,10 +865,11 @@ function registerWebMCPTools() {
   } else {
     console.info(`[WebMCP] Registered ${registered} tools`);
   }
-  updateWebMCPBadge(badge, registered);
+  updateWebMCPBadge(registered);
 }
 
-function updateWebMCPBadge(badge, registered) {
+function updateWebMCPBadge(registered) {
+  const badge = document.getElementById("webmcp-badge");
   _webmcpActive = registered > 0;
   badge.className = "webmcp-badge" + (_webmcpActive ? " ok" : "");
   badge.textContent = _webmcpActive ? `WebMCP · ${registered} tools` : "WebMCP · inactive";
@@ -906,8 +925,10 @@ function createLogEntryEl(entry) {
 }
 
 async function replayToolCall(entry) {
-  const tool = TOOLS.find(t => t.name === entry.toolName);
-  if (!tool) { toast(`Tool "${entry.toolName}" not found`, "error"); return; }
+  if (!TOOLS.some(t => t.name === entry.toolName)) {
+    toast(`Tool "${entry.toolName}" not found`, "error");
+    return;
+  }
   const result = await chatExecuteToolCall(entry.toolName, entry.params);
   if (result.error) {
     toast(`Replay failed: ${result.error}`, "error");
@@ -921,6 +942,14 @@ async function replayToolCall(entry) {
 function clearChatHistory() {
   chatState.convMsgs = [];
   document.getElementById("chat-messages").innerHTML = "";
+}
+
+function resetChatBusy() {
+  chatState.abortCtrl?.abort();
+  chatState.busy = false;
+  chatState.abortCtrl = null;
+  document.getElementById("chat-send").disabled = false;
+  document.getElementById("chat-abort").hidden = true;
 }
 
 const GITHUB_CLIENT_ID = "Ov23lioKDt8Os7hdiSEh";
@@ -960,7 +989,10 @@ function initChat() {
 
   document.getElementById("chat-send").addEventListener("click", sendChatMsg);
   document.getElementById("chat-input").addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendChatMsg(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      sendChatMsg();
+    }
   });
   document.getElementById("chat-abort").addEventListener("click", () => chatState.abortCtrl?.abort());
   document.getElementById("chat-clear").addEventListener("click", clearChatHistory);
@@ -988,12 +1020,12 @@ function applyModelSelection(value) {
   const [provider, ...rest] = value.split(":");
   chatState.provider = provider;
   chatState.model = rest.join(":");
-  const isGitHub = provider === "github";
-  const isLocal = provider === "local";
-  document.getElementById("chat-claude-bar").style.display = (!isGitHub && !isLocal) ? "" : "none";
-  document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
-  document.getElementById("github-notice").hidden = !isGitHub || !!localStorage.getItem("webmcp-github-notice-dismissed");
-  if (isGitHub) updateGitHubAuthBar();
+  const showClaudeBar = provider === "anthropic";
+  const showGitHubBar = provider === "github";
+  document.getElementById("chat-claude-bar").style.display = showClaudeBar ? "" : "none";
+  document.getElementById("chat-github-bar").style.display = showGitHubBar ? "" : "none";
+  document.getElementById("github-notice").hidden = !showGitHubBar || !!localStorage.getItem("webmcp-github-notice-dismissed");
+  if (showGitHubBar) updateGitHubAuthBar();
 }
 
 async function connectGitHub() {
@@ -1015,7 +1047,10 @@ async function connectGitHub() {
       authUrl.toString(), "github-oauth",
       `width=${width},height=${height},left=${left},top=${top},popup=yes`
     );
-    if (!popup) { reject(new Error("Popup blocked — allow popups for this site")); return; }
+    if (!popup) {
+      reject(new Error("Popup blocked — allow popups for this site"));
+      return;
+    }
 
     const handleMessage = async (event) => {
       if (event.origin !== OAUTH_CALLBACK_ORIGIN) return;
@@ -1023,8 +1058,14 @@ async function connectGitHub() {
       if (type !== "oauth-callback") return;
       window.removeEventListener("message", handleMessage);
       clearInterval(pollTimer);
-      if (error) { reject(new Error(error)); return; }
-      if (!code) { reject(new Error("No code received")); return; }
+      if (error) {
+        reject(new Error(error));
+        return;
+      }
+      if (!code) {
+        reject(new Error("No code received"));
+        return;
+      }
       try {
         const res = await fetch(`${CORS_PROXY_URL}/token`, {
           method: "POST",
@@ -1104,7 +1145,9 @@ function getSystemPrompt() {
   ];
   if (isConnected()) {
     lines.push(`Connected to MQTT broker at ${state.url}.`);
-    lines.push(`Known topics (${state.seenTopics.length}): ${state.seenTopics.slice(0, 20).join(", ")}${state.seenTopics.length > 20 ? "…" : ""}`);
+    const topics = state.seenTopics;
+    const preview = topics.slice(0, 20).join(", ");
+    lines.push(`Known topics (${topics.length}): ${preview}${topics.length > 20 ? "…" : ""}`);
   } else {
     lines.push("The broker is not currently connected. Use connect_to_broker to connect first.");
   }
@@ -1129,13 +1172,9 @@ async function chatExecuteToolCall(name, input) {
   const tool = TOOLS.find(t => t.name === name);
   const t0 = Date.now();
   const id = ++_toolLogId;
-  let result;
-  if (!tool) {
-    result = { error: `Unknown tool: ${name}` };
-  } else {
-    try { result = await tool.handler(input); }
-    catch (err) { result = { error: String(err) }; }
-  }
+  let result = tool
+    ? await tool.handler(input).catch(err => ({ error: String(err) }))
+    : { error: `Unknown tool: ${name}` };
   appendToolLog({ id, toolName: name, params: input, result, ts: new Date(), durationMs: Date.now() - t0 });
   return result;
 }
@@ -1171,10 +1210,7 @@ async function sendChatMsg() {
   } catch (err) {
     handleStreamError(err);
   } finally {
-    chatState.busy = false;
-    chatState.abortCtrl = null;
-    document.getElementById("chat-send").disabled = false;
-    document.getElementById("chat-abort").hidden = true;
+    resetChatBusy();
   }
 }
 
@@ -1184,16 +1220,10 @@ const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
 
 function buildLocalPrompt() {
   const parts = [
-    "You are an AI assistant for an MQTT IoT dashboard. Respond with plain text only — do not use any tools or run any commands.",
+    getSystemPrompt(),
+    "Respond with plain text only — do not use any tools or run any commands.",
+    "",
   ];
-  if (isConnected()) {
-    parts.push(`MQTT broker: ${state.url}`);
-    parts.push(`Known topics (${state.seenTopics.length}): ${state.seenTopics.slice(0, 20).join(", ")}${state.seenTopics.length > 20 ? "…" : ""}`);
-  } else {
-    parts.push("MQTT broker: not connected.");
-  }
-  if (state.selected) parts.push(`Currently viewing topic: ${state.selected.name}`);
-  parts.push("Be concise.", "");
   for (const msg of chatState.convMsgs) {
     const label = msg.role === "user" ? "User" : "Assistant";
     const content = typeof msg.content === "string"
@@ -1309,7 +1339,10 @@ async function runConversationClaude(apiKey, signal) {
           }
           case "content_block_stop": {
             if (currentBlockType === "text" && currentTextContent) {
-              if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+              if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = 0;
+              }
               if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
               contentBlocks.push({ type: "text", text: currentTextContent });
               currentTextEl = null;
@@ -1332,7 +1365,10 @@ async function runConversationClaude(apiKey, signal) {
 
     chatState.convMsgs.push({ role: "assistant", content: contentBlocks });
     const toolUses = contentBlocks.filter(b => b.type === "tool_use");
-    if (toolUses.length === 0) { hideChatSpinner(); return; }
+    if (toolUses.length === 0) {
+      hideChatSpinner();
+      return;
+    }
 
     const toolResults = [];
     for (const tu of toolUses) {
@@ -1399,7 +1435,10 @@ async function runConversationGitHub(token, signal) {
       });
       if (!res.ok) {
         hideChatSpinner();
-        if (res.status === 429) { appendRateLimitMsg(); return; }
+        if (res.status === 429) {
+          appendRateLimitMsg();
+          return;
+        }
         const txt = await res.text();
         throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
       }
@@ -1453,7 +1492,10 @@ async function runConversationGitHub(token, signal) {
       return;
     }
 
-    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
     if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
 
     const toolCalls = Object.values(tcMap);
@@ -1466,7 +1508,10 @@ async function runConversationGitHub(token, signal) {
     }
     chatState.convMsgs.push(assistantMsg);
 
-    if (toolCalls.length === 0) { hideChatSpinner(); return; }
+    if (toolCalls.length === 0) {
+      hideChatSpinner();
+      return;
+    }
 
     for (const tc of toolCalls) {
       let parsedArgs;
@@ -1509,12 +1554,7 @@ function appendChatMsg(role, text) {
 }
 
 function truncateConvAt(msgEl, msgIndex) {
-  if (chatState.busy) {
-    chatState.abortCtrl?.abort();
-    chatState.busy = false;
-    document.getElementById("chat-send").disabled = false;
-    document.getElementById("chat-abort").hidden = true;
-  }
+  if (chatState.busy) resetChatBusy();
   hideChatSpinner();
   while (msgEl.nextSibling) msgEl.nextSibling.remove();
   msgEl.remove();
@@ -1680,7 +1720,10 @@ document.getElementById("connect-btn").addEventListener("click", () => {
     return;
   }
   const url = document.getElementById("url-input").value.trim();
-  if (url) { cancelReconnect(); connect(url); }
+  if (url) {
+    cancelReconnect();
+    connect(url);
+  }
 });
 
 document.getElementById("url-input").addEventListener("keydown", (e) => {
@@ -1704,11 +1747,6 @@ presetsPopover.querySelectorAll(".url-preset-item").forEach(item => {
   });
 });
 
-document.addEventListener("click", () => { presetsPopover.hidden = true; });
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") presetsPopover.hidden = true;
-});
-
 document.getElementById("sidebar-filter").addEventListener("input", (e) => {
   state.filter = e.target.value;
   renderSidebar();
@@ -1718,10 +1756,7 @@ document.getElementById("topic-add-input").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   const topic = e.target.value.trim();
   if (!topic) return;
-  if (!state.seenTopics.includes(topic)) {
-    state.seenTopics.push(topic);
-    renderSidebar();
-  }
+  trackTopic(topic);
   selectTopic(topic);
   e.target.value = "";
 });
@@ -1765,7 +1800,10 @@ initChat();
 document.getElementById("webmcp-badge").addEventListener("click", () => {
   const popover = document.getElementById("webmcp-popover");
   if (!popover) return;
-  if (!popover.hidden) { popover.hidden = true; return; }
+  if (!popover.hidden) {
+    popover.hidden = true;
+    return;
+  }
 
   popover.innerHTML = "";
 
@@ -1802,12 +1840,6 @@ document.getElementById("webmcp-badge").addEventListener("click", () => {
   popover.hidden = false;
 });
 
-document.addEventListener("click", (e) => {
-  const popover = document.getElementById("webmcp-popover");
-  if (!popover || popover.hidden) return;
-  if (!e.target.closest(".webmcp-badge-wrap")) popover.hidden = true;
-});
-
 // ── Settings popover ──────────────────────────────────────────────────────────
 
 const settingsBtn     = document.getElementById("settings-btn");
@@ -1820,28 +1852,27 @@ settingsBtn.addEventListener("click", (e) => {
   settingsBtn.setAttribute("aria-expanded", String(opening));
 });
 
-document.addEventListener("click", (e) => {
-  if (!e.target.closest(".settings-wrap")) {
-    settingsPopover.hidden = true;
-    settingsBtn.setAttribute("aria-expanded", "false");
-  }
-});
-
 // ── Theme toggle ──────────────────────────────────────────────────────────────
 
-function applyTheme(theme) {
-  localStorage.setItem("webmcp-theme", theme);
-  if (theme === "dark") {
-    document.documentElement.setAttribute("data-theme", "dark");
-  } else if (theme === "light") {
-    document.documentElement.setAttribute("data-theme", "light");
-  } else {
-    document.documentElement.removeAttribute("data-theme");
-  }
+const _darkMq = window.matchMedia("(prefers-color-scheme: dark)");
+
+function resolveTheme(preference) {
+  if (preference === "dark" || preference === "light") return preference;
+  return _darkMq.matches ? "dark" : "light";
+}
+
+function applyTheme(preference) {
+  localStorage.setItem("webmcp-theme", preference);
+  document.documentElement.setAttribute("data-theme", resolveTheme(preference));
   document.querySelectorAll(".theme-opt").forEach(btn => {
-    btn.classList.toggle("active", btn.dataset.theme === theme);
+    btn.classList.toggle("active", btn.dataset.theme === preference);
   });
 }
+
+_darkMq.addEventListener("change", () => {
+  const saved = localStorage.getItem("webmcp-theme") || "system";
+  if (saved === "system") applyTheme("system");
+});
 
 document.querySelectorAll(".theme-opt").forEach(btn => {
   btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
@@ -1864,14 +1895,30 @@ function updateChatModelLabel() {
 document.getElementById("chat-model-select").addEventListener("change", updateChatModelLabel);
 updateChatModelLabel();
 
-// Escape closes all popovers
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
+// ── Close all popovers on outside click or Escape ────────────────────────────
+
+function closeAllPopovers(except) {
+  if (except !== "presets") presetsPopover.hidden = true;
+  if (except !== "settings") {
     settingsPopover.hidden = true;
     settingsBtn.setAttribute("aria-expanded", "false");
+  }
+  if (except !== "webmcp") {
     const wmcp = document.getElementById("webmcp-popover");
     if (wmcp) wmcp.hidden = true;
   }
+}
+
+document.addEventListener("click", (e) => {
+  let except = null;
+  if (e.target.closest(".url-wrap")) except = "presets";
+  else if (e.target.closest(".settings-wrap")) except = "settings";
+  else if (e.target.closest(".webmcp-badge-wrap")) except = "webmcp";
+  closeAllPopovers(except);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeAllPopovers();
 });
 
 // Restore saved URL into input and auto-connect on load

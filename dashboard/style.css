@@ -7,7 +7,7 @@
   --text-rgb: 26, 25, 23;
   --text: #1a1917;
   --text-secondary: rgba(var(--text-rgb), 0.60);
-  --text-muted: rgba(var(--text-rgb), 0.38);
+  --text-muted: rgba(var(--text-rgb), 0.58);
   --accent: #2d6a4f;
   --accent-hover: #1b4332;
   --accent-light: #d8f3dc;
@@ -74,7 +74,7 @@ body {
   color: inherit;
 }
 .topbar-home-btn:hover {
-  background: var(--hover);
+  background: var(--surface-raised);
 }
 
 .topbar-logo {
@@ -138,12 +138,7 @@ body {
 
 .status-dot.connected  { background: var(--accent); }
 .status-dot.error      { background: var(--danger); }
-.status-dot.connecting { background: var(--warn); animation: dot-pulse 1s ease-in-out infinite; }
-
-@keyframes dot-pulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.2; }
-}
+.status-dot.connecting { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
 
 .url-wrap {
   position: relative;
@@ -341,7 +336,7 @@ body {
   border-radius: calc(var(--radius) - 3px);
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.15s, color 0.1s, box-shadow 0.15s;
   font-family: var(--font);
@@ -358,17 +353,10 @@ body {
   outline-offset: -1px;
 }
 
-/* ── GitHub notice inside settings ── */
+/* ── GitHub notice (settings-notice overrides when inside settings popover) ── */
 
 .settings-notice {
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   padding: 8px 14px;
-  font-size: 11px;
-  color: #92400e;
-  background: #fef3c7;
   border-top: 1px solid #fde68a;
   border-bottom: none;
 }
@@ -389,7 +377,7 @@ body {
 .chat-model-label::before {
   content: "·";
   margin-right: 6px;
-  color: var(--border-strong);
+  color: var(--text-muted);
 }
 
 /* ── Sidebar ── */
@@ -488,7 +476,7 @@ body {
   outline-offset: -2px;
 }
 
-.sidebar-heading-chevron {
+.sidebar-chevron {
   display: inline-block;
   width: 8px;
   height: 5px;
@@ -498,40 +486,8 @@ body {
   transition: transform 0.15s;
 }
 
-.sidebar-heading-chevron.collapsed {
+.sidebar-chevron.collapsed {
   transform: rotate(-90deg);
-}
-
-.sys-filter-btn {
-  flex-shrink: 0;
-  height: 18px;
-  padding: 0 5px;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  cursor: pointer;
-  line-height: 1;
-}
-
-.sys-filter-btn:hover {
-  background: var(--surface);
-  color: var(--text-secondary);
-}
-
-.sys-filter-btn.active {
-  background: var(--surface-raised);
-  color: var(--text-secondary);
-  border-color: var(--border-strong);
-}
-
-.sys-filter-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .sidebar-item-row {
@@ -660,18 +616,6 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-
-.sidebar-ns-chevron {
-  display: inline-block;
-  width: 8px;
-  height: 5px;
-  background: currentColor;
-  clip-path: polygon(0 0, 100% 0, 50% 100%);
-  flex-shrink: 0;
-  transition: transform 0.15s;
-}
-
-.sidebar-ns-chevron.collapsed { transform: rotate(-90deg); }
 
 .sidebar-item-indented { padding-left: 22px; }
 
@@ -913,11 +857,6 @@ body {
   line-height: 1.45;
 }
 
-.pose-canvas {
-  display: block;
-  width: 100%;
-}
-
 /* ── Main panel ── */
 
 .main {
@@ -1040,22 +979,6 @@ body {
   font-style: italic;
 }
 
-.list-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.chip {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 2px 7px;
-}
-
 /* ── Subscribe / Publish controls ── */
 
 .controls-row {
@@ -1097,37 +1020,28 @@ body {
   font-weight: 500;
 }
 
-.input-field {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 6px 9px;
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
-  color: var(--text);
-  width: 100%;
-}
-
-.input-field:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
+.input-field,
 .textarea-field {
   font-family: var(--font-mono);
   font-size: 12px;
-  padding: 7px 9px;
+  padding: 6px 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
   width: 100%;
+}
+
+.input-field { height: 34px; }
+
+.textarea-field {
+  padding: 7px 9px;
   resize: vertical;
   min-height: 72px;
   line-height: 1.5;
 }
 
+.input-field:focus-visible,
 .textarea-field:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -1211,14 +1125,10 @@ body {
   color: #fff;
 }
 
-/* Dark mode: vivid accent is too bright for white text (~1.9:1).
-   Use near-black text instead — same pattern as Apple's dark-mode buttons. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .btn-primary { color: #0c2318; }
-  :root:not([data-theme="light"]) .chat-send-btn { color: #0c2318; }
-}
-:root[data-theme="dark"] .btn-primary { color: #0c2318; }
-:root[data-theme="dark"] .chat-send-btn { color: #0c2318; }
+/* Dark mode: vivid accent (#3fcf82) is bright green — near-black text gives 11:1 contrast.
+   Light mode: dark accent (#2d6a4f) uses white text (6.2:1) defined in .btn-primary / .chat-send-btn above. */
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .chat-send-btn { color: #0c2318; }
 
 .btn-primary:hover {
   background: var(--accent-hover);
@@ -1241,19 +1151,6 @@ body {
   border-color: var(--border-strong);
 }
 
-/* ── Banners ── */
-
-.banner {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font-size: 13px;
-  border: 1px solid;
-}
-
-.banner-warn  { background: var(--warn-light);   border-color: #f0d070; color: var(--warn); }
-.banner-error { background: var(--danger-light); border-color: #f5bcb8; color: var(--danger); }
-.banner-ok    { background: var(--accent-light); border-color: #b7e4c7; color: var(--accent-hover); }
-
 /* ── Watching indicator ── */
 
 .watch-indicator {
@@ -1275,7 +1172,7 @@ body {
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50%       { opacity: 0.3; }
+  50%       { opacity: 0.2; }
 }
 
 /* ── Tool call log ── */
@@ -1436,10 +1333,11 @@ body {
 }
 
 /* ── Dark mode ── */
-/* Applied when system is dark (unless user forces light) OR user forces dark */
+/* JS always sets data-theme explicitly (resolving "system" via matchMedia).
+   The @media fallback covers the brief pre-JS moment and no-JS scenarios. */
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme]) {
     --text-rgb: 237, 233, 227;
     --bg: #191c19;
     --surface: #1f2320;
@@ -1459,7 +1357,7 @@ body {
   }
 }
 
-:root[data-theme="dark"] {
+html[data-theme="dark"] {
   --text-rgb: 237, 233, 227;
   --bg: #191c19;
   --surface: #1f2320;
@@ -1479,32 +1377,6 @@ body {
 }
 
 /* Dark-specific component overrides */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .chat-model-select,
-  :root:not([data-theme="light"]) .settings-popover,
-  :root:not([data-theme="light"]) .url-presets-popover,
-  :root:not([data-theme="light"]) .webmcp-popover { --select-arrow: '%23a09890'; }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .chat-model-select {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23a09890' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  }
-  :root:not([data-theme="light"]) .url-presets-popover,
-  :root:not([data-theme="light"]) .webmcp-popover,
-  :root:not([data-theme="light"]) .settings-popover {
-    background: rgba(24, 28, 25, 0.92);
-  }
-  :root:not([data-theme="light"]) .github-notice,
-  :root:not([data-theme="light"]) .settings-notice {
-    color: #fbbf24;
-    background: #292109;
-    border-color: #4a3b0a;
-  }
-  :root:not([data-theme="light"]) .github-notice-dismiss { color: #fbbf24; }
-  :root:not([data-theme="light"]) .webmcp-badge { border-color: #4a3b0a; }
-}
-
 [data-theme="dark"] .chat-model-select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23a09890' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
@@ -1568,12 +1440,6 @@ body {
   color: var(--text-muted);
 }
 
-.chat-config {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
 .chat-model-select {
   width: 100%;
   height: 30px;
@@ -1592,14 +1458,6 @@ body {
 .chat-model-select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-.chat-auth-bar {
-  display: flex;
-  gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
 }
 
 .github-notice {
@@ -1748,26 +1606,6 @@ body {
   font-weight: 600;
 }
 
-.chat-code {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 10px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  white-space: pre-wrap;
-  word-break: break-all;
-  overflow-x: auto;
-  margin: 4px 0;
-}
-
-.chat-code code {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: inherit;
-}
-
 /* ── GitHub auth bar elements ── */
 
 .github-connect-btn {
@@ -1879,7 +1717,7 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--border-strong);
+  background: var(--text-muted);
   animation: chat-bounce 1.2s ease-in-out infinite;
 }
 
@@ -1941,12 +1779,11 @@ body {
   align-items: center;
   justify-content: center;
   transition: background 0.1s, transform 0.1s;
-  flex-shrink: 0;
 }
 
 .chat-send-btn {
   background: var(--accent);
-  color: #0c2318;
+  color: #fff; /* white on dark green (#2d6a4f) in light mode = 6.2:1 contrast */
 }
 
 .chat-send-btn:hover { background: var(--accent-hover); }
