@@ -5,7 +5,7 @@
 const state = {
   mqttClient: null,
   connected: false,
-  url: "ws://broker.hivemq.com:8000/mqtt",
+  url: "wss://broker.hivemq.com:8884/mqtt",
   seenTopics: [],           // topics seen via '#' subscription
   watching: null,           // topic name currently being live-watched
   topicListeners: {},       // topic -> Set<callback> for persistent listeners
@@ -584,12 +584,13 @@ const TOOLS = [
       type: "object",
       properties: {
         ip:   { type: "string", description: "MQTT broker host IP or hostname", default: "broker.hivemq.com" },
-        port: { type: "number", description: "MQTT WebSocket port", default: 8000 },
+        port: { type: "number", description: "MQTT WebSocket port (8884 for wss, 9001 for local ws)", default: 8884 },
       },
       required: ["ip"],
     },
-    handler: async ({ ip, port = 9001 }) => {
-      const url = `ws://${ip}:${port}`;
+    handler: async ({ ip, port = 8884 }) => {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const url = `${proto}://${ip}:${port}/mqtt`;
       document.getElementById("url-input").value = url;
       connect(url);
       return { status: "connecting", url };

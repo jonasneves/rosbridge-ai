@@ -66,7 +66,7 @@ Then set in `config.mk`:
 MQTT_IP = <your local IP>
 ```
 
-And connect the dashboard to `ws://<your local IP>:9001`.
+And connect the dashboard to `ws://<your local IP>:9001` (or `ws://localhost:9001` with `make preview`).
 
 ## Repo structure
 
