@@ -105,7 +105,7 @@ void loop() {
       Serial.print("Connecting to MQTT...");
       String clientId = "esp32-" + topicAnn.substring(8);  // esp32-<mac>
       if (mqttClient.connect(clientId.c_str())) {
-        Serial.println(" connected");
+        Serial.println(" connected (" + String(MQTT_IP) + ")");
         String announcement = "{\"topics\":[\"" + topicCmd + "\"]}";
         mqttClient.publish(topicAnn.c_str(), announcement.c_str(), true);
         mqttClient.subscribe(topicCmd.c_str());
