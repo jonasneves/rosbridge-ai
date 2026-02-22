@@ -117,10 +117,7 @@ function connect(url) {
   ros.on("close", () => {
     state.connected = false;
     updateStatusDot(false, false);
-    state.topics = [];
-    state.nodes = [];
-    state.services = [];
-    state.selected = null;
+    Object.assign(state, { topics: [], nodes: [], services: [], selected: null });
     unpinAllTopics();
     renderSidebar();
     renderMainPlaceholder();
@@ -130,9 +127,7 @@ function connect(url) {
 
 function updateStatusDot(connected, error) {
   const dot = document.getElementById("status-dot");
-  let modifier = "";
-  if (connected) modifier = " connected";
-  else if (error) modifier = " error";
+  const modifier = connected ? " connected" : error ? " error" : "";
   dot.className = "status-dot" + modifier;
 }
 
@@ -149,8 +144,7 @@ async function loadTopics() {
     const res = await callRosapi("/rosapi/topics", "rosapi/Topics", {});
     state.topics = res.topics || [];
     const types = res.types || [];
-    state.topicTypes = {};
-    state.topics.forEach((t, i) => { state.topicTypes[t] = types[i] || ""; });
+    state.topicTypes = Object.fromEntries(state.topics.map((t, i) => [t, types[i] || ""]));
   } catch {
     state.topics = [];
   }
@@ -182,15 +176,19 @@ function isSystemNode(name) {
     name.startsWith("/_");
 }
 
+const SYSTEM_SERVICE_SUFFIXES = [
+  "/describe_parameters",
+  "/get_parameter_types",
+  "/get_parameters",
+  "/list_parameters",
+  "/set_parameters",
+  "/set_parameters_atomically",
+];
+
 function isSystemService(name) {
   return name.startsWith("/rosapi/") ||
     name.startsWith("/rosbridge_websocket/") ||
-    name.endsWith("/describe_parameters") ||
-    name.endsWith("/get_parameter_types") ||
-    name.endsWith("/get_parameters") ||
-    name.endsWith("/list_parameters") ||
-    name.endsWith("/set_parameters") ||
-    name.endsWith("/set_parameters_atomically");
+    SYSTEM_SERVICE_SUFFIXES.some(s => name.endsWith(s));
 }
 
 function renderMainPlaceholder() {
@@ -268,16 +266,15 @@ function renderList(containerId, items, kind) {
 
   filtered.forEach(name => {
     const isActive = state.selected?.kind === kind && state.selected?.name === name;
+    const btn = document.createElement("button");
+    btn.className = "sidebar-item" + (isActive ? " active" : "");
+    btn.textContent = name;
+    btn.title = name;
+    btn.addEventListener("click", () => selectEntity(kind, name));
 
     if (kind === "topic") {
       const row = document.createElement("div");
       row.className = "sidebar-item-row";
-
-      const btn = document.createElement("button");
-      btn.className = "sidebar-item" + (isActive ? " active" : "");
-      btn.textContent = name;
-      btn.title = name;
-      btn.addEventListener("click", () => selectEntity(kind, name));
 
       const pinBtn = document.createElement("button");
       const isPinned = !!state.pinnedTopics[name];
@@ -291,11 +288,6 @@ function renderList(containerId, items, kind) {
       row.appendChild(pinBtn);
       container.appendChild(row);
     } else {
-      const btn = document.createElement("button");
-      btn.className = "sidebar-item" + (isActive ? " active" : "");
-      btn.textContent = name;
-      btn.title = name;
-      btn.addEventListener("click", () => selectEntity(kind, name));
       container.appendChild(btn);
     }
   });
@@ -303,14 +295,18 @@ function renderList(containerId, items, kind) {
 
 // ── Entity selection ──────────────────────────────────────────────────────────
 
+const PANEL_RENDERERS = {
+  topic: renderTopicPanel,
+  node: renderNodePanel,
+  service: renderServicePanel,
+};
+
 function selectEntity(kind, name) {
   stopWatching();
   stopContinuousPublish();
   state.selected = { kind, name };
   renderSidebar();
-  if (kind === "topic") renderTopicPanel(name);
-  else if (kind === "node") renderNodePanel(name);
-  else if (kind === "service") renderServicePanel(name);
+  PANEL_RENDERERS[kind]?.(name);
 }
 
 // ── Topic panel ────────────────────────────────────────────────────────────────
@@ -583,10 +579,10 @@ function unpinTopic(topic) {
 }
 
 function unpinAllTopics() {
-  Object.keys(state.pinnedTopics).forEach(topic => {
-    state.pinnedTopics[topic].sub.unsubscribe();
-    delete state.pinnedTopics[topic];
-  });
+  for (const entry of Object.values(state.pinnedTopics)) {
+    entry.sub.unsubscribe();
+  }
+  state.pinnedTopics = {};
   renderPinnedRow();
 }
 
@@ -1223,19 +1219,11 @@ function createLogEntryEl(entry) {
   return el;
 }
 
-function replayToolCall(entry) {
+async function replayToolCall(entry) {
   const tool = TOOLS.find(t => t.name === entry.toolName);
   if (!tool) { toast(`Tool "${entry.toolName}" not found`, "error"); return; }
-  const t0 = Date.now();
-  tool.handler(entry.params)
-    .then(result => {
-      appendToolLog({ id: ++_toolLogId, toolName: entry.toolName, params: entry.params, result, ts: new Date(), durationMs: Date.now() - t0 });
-      toast(`Replayed ${entry.toolName}`, "ok");
-    })
-    .catch(err => {
-      appendToolLog({ id: ++_toolLogId, toolName: entry.toolName, params: entry.params, result: { error: String(err) }, ts: new Date(), durationMs: Date.now() - t0 });
-      toast(`Replay failed: ${err}`, "error");
-    });
+  const result = await chatExecuteToolCall(entry.toolName, entry.params);
+  toast(result.error ? `Replay failed: ${result.error}` : `Replayed ${entry.toolName}`, result.error ? "error" : "ok");
 }
 
 // ── UI helpers ─────────────────────────────────────────────────────────────────
@@ -1337,9 +1325,9 @@ function initChat() {
 }
 
 function applyModelSelection(value) {
-  const colonIdx = value.indexOf(":");
-  chatState.provider = value.slice(0, colonIdx);
-  chatState.model = value.slice(colonIdx + 1);
+  const [provider, ...rest] = value.split(":");
+  chatState.provider = provider;
+  chatState.model = rest.join(":");
   const isGitHub = chatState.provider === "github";
   document.getElementById("chat-claude-bar").style.display = isGitHub ? "none" : "";
   document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
@@ -1645,7 +1633,7 @@ async function runConversationClaude(apiKey, signal) {
   }
 }
 
-async function* parseSSEStream(body) {
+async function* readStreamLines(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -1656,18 +1644,22 @@ async function* parseSSEStream(body) {
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
-      let currentEvent = null;
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          currentEvent = line.slice(7).trim();
-        } else if (line.startsWith("data: ") && currentEvent) {
-          try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch {}
-          currentEvent = null;
-        }
-      }
+      for (const line of lines) yield line;
     }
   } finally {
     reader.releaseLock();
+  }
+}
+
+async function* parseSSEStream(body) {
+  let currentEvent = null;
+  for await (const line of readStreamLines(body)) {
+    if (line.startsWith("event: ")) {
+      currentEvent = line.slice(7).trim();
+    } else if (line.startsWith("data: ") && currentEvent) {
+      try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch {}
+      currentEvent = null;
+    }
   }
 }
 
@@ -1780,25 +1772,11 @@ async function runConversationGitHub(token, signal) {
 }
 
 async function* parseOpenAIStream(body) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") return;
-        try { yield JSON.parse(data); } catch {}
-      }
-    }
-  } finally {
-    reader.releaseLock();
+  for await (const line of readStreamLines(body)) {
+    if (!line.startsWith("data: ")) continue;
+    const data = line.slice(6).trim();
+    if (data === "[DONE]") return;
+    try { yield JSON.parse(data); } catch {}
   }
 }
 

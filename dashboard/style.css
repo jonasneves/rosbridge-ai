@@ -490,7 +490,6 @@ body {
 
 .pinned-row {
   display: flex;
-  flex-direction: row;
   gap: 10px;
   padding: 10px 16px;
   background: var(--surface);

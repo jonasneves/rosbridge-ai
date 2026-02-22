@@ -4,21 +4,18 @@ import { createHash } from 'crypto';
 
 mkdirSync('dist', { recursive: true });
 
-const js = await esbuild.transform(readFileSync('ros-webmcp.js', 'utf8'), {
-  loader: 'js',
-  minify: true,
-});
-const jsHash = createHash('sha256').update(js.code).digest('hex').slice(0, 8);
-const jsFile = `ros-webmcp.${jsHash}.js`;
-writeFileSync(`dist/${jsFile}`, js.code);
+async function minifyAndWrite(srcFile, loader) {
+  const { code } = await esbuild.transform(readFileSync(srcFile, 'utf8'), { loader, minify: true });
+  const hash = createHash('sha256').update(code).digest('hex').slice(0, 8);
+  const name = srcFile.replace(/\.(\w+)$/, `.${hash}.$1`);
+  writeFileSync(`dist/${name}`, code);
+  return name;
+}
 
-const css = await esbuild.transform(readFileSync('style.css', 'utf8'), {
-  loader: 'css',
-  minify: true,
-});
-const cssHash = createHash('sha256').update(css.code).digest('hex').slice(0, 8);
-const cssFile = `style.${cssHash}.css`;
-writeFileSync(`dist/${cssFile}`, css.code);
+const [jsFile, cssFile] = await Promise.all([
+  minifyAndWrite('ros-webmcp.js', 'js'),
+  minifyAndWrite('style.css', 'css'),
+]);
 
 let html = readFileSync('index.html', 'utf8');
 html = html.replace('href="style.css"', `href="${cssFile}"`);
