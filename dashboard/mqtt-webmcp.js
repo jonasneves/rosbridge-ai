@@ -583,8 +583,8 @@ const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        ip:   { type: "string", description: "MQTT broker host IP or hostname", default: "127.0.0.1" },
-        port: { type: "number", description: "MQTT WebSocket port", default: 9001 },
+        ip:   { type: "string", description: "MQTT broker host IP or hostname", default: "broker.hivemq.com" },
+        port: { type: "number", description: "MQTT WebSocket port", default: 8000 },
       },
       required: ["ip"],
     },
