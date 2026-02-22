@@ -11,7 +11,7 @@ ESPOTA    := $(shell find ~/Library/Arduino15/packages/esp32 -name espota.py 2>/
 
 BUILD_FLAGS := 'build.extra_flags=-DWIFI_SSID="$(strip $(WIFI_SSID))" -DWIFI_PASS="$(strip $(WIFI_PASS))" -DMQTT_IP="$(strip $(MQTT_IP))"'
 
-.PHONY: help setup mqtt preview compile flash ota monitor flash-monitor
+.PHONY: help setup mqtt preview proxy compile flash ota monitor flash-monitor
 
 help:
 	@echo ""
@@ -21,6 +21,7 @@ help:
 	@echo "Dev"
 	@echo "  \033[36mmqtt\033[0m           Start local Mosquitto broker (optional — cloud broker used by default)"
 	@echo "  \033[36mpreview\033[0m        Serve dashboard at http://localhost:8080"
+	@echo "  \033[36mproxy\033[0m          Start local Claude proxy (personal account, port 7337)"
 	@echo ""
 	@echo "Firmware"
 	@echo "  \033[36mflash\033[0m          Compile + upload over USB (first time)"
@@ -55,6 +56,10 @@ mqtt:
 preview:
 	@printf "\n\033[1;36m  Dashboard: http://localhost:8080\033[0m\n\n"
 	python3 -m http.server 8080 --directory dashboard
+
+proxy:
+	@printf "\n\033[1;36m  Claude proxy: http://127.0.0.1:7337\033[0m\n\n"
+	node local-proxy.js
 
 compile:
 	@echo "Compiling firmware..."

@@ -2,10 +2,14 @@
 
 // ── State ────────────────────────────────────────────────────────────────────
 
+const DEFAULT_BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
+
 const state = {
   mqttClient: null,
   connected: false,
-  url: "wss://broker.hivemq.com:8884/mqtt",
+  connecting: false,
+  manualDisconnect: false,
+  url: localStorage.getItem("webmcp-broker-url") || DEFAULT_BROKER_URL,
   seenTopics: [],           // topics seen via '#' subscription
   watching: null,           // topic name currently being live-watched
   topicListeners: {},       // topic -> Set<callback> for persistent listeners
@@ -18,6 +22,7 @@ const state = {
   toolLog: [],
   reconnect: null,
   sidebarCollapsed: { topics: false },
+  topicMsgCounts: {},
 };
 
 let _toolLogId = 0;
@@ -86,11 +91,13 @@ function scheduleReconnect() {
   if (state.reconnect.attempts >= RECONNECT_MAX) {
     state.reconnect = null;
     toast("Max reconnect attempts reached", "error");
+    updateStatusDot(false, true);
     document.getElementById("status-text").textContent = "Disconnected";
     return;
   }
   const delay = Math.min(RECONNECT_BASE_MS * 2 ** state.reconnect.attempts, RECONNECT_CAP_MS);
   state.reconnect.attempts++;
+  updateStatusDot(false, false, true);
   document.getElementById("status-text").textContent =
     `Reconnecting in ${Math.round(delay / 1000)}s… (${state.reconnect.attempts}/${RECONNECT_MAX})`;
   state.reconnect.timer = setTimeout(() => {
@@ -108,21 +115,31 @@ function cancelReconnect() {
 
 function connect(url) {
   cancelReconnect();
+  state.manualDisconnect = false;
+  state.connecting = true;
   if (state.mqttClient) {
     state.mqttClient.end(true);
     state.mqttClient = null;
   }
   stopWatching();
 
+  updateStatusDot(false, false, true);
+  document.getElementById("status-text").textContent = "Connecting…";
+  renderMainPlaceholder();
+
   state.url = url;
+  localStorage.setItem("webmcp-broker-url", url);
   const client = mqtt.connect(url, { reconnectPeriod: 0 }); // manual reconnect
   state.mqttClient = client;
 
   client.on("connect", () => {
     cancelReconnect();
     state.connected = true;
+    state.connecting = false;
     updateStatusDot(true, false);
-    document.getElementById("status-text").textContent = url;
+    const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    document.getElementById("status-text").textContent = hostname;
+    document.getElementById("connect-btn").textContent = "Disconnect";
     client.subscribe("#");         // passively discover all active topics
     client.subscribe("devices/#"); // device announcements (retained, replayed immediately)
     renderSidebar();
@@ -137,12 +154,18 @@ function connect(url) {
       try {
         const { topics } = JSON.parse(msg);
         for (const t of topics) trackTopic(t);
+        if (!state.selected && state.seenTopics.length > 0) selectTopic(state.seenTopics[0]);
       } catch { /* ignore malformed announcements */ }
       return;
     }
 
     // Track seen topics
     trackTopic(topic);
+
+    // Count and animate sidebar
+    state.topicMsgCounts[topic] = (state.topicMsgCounts[topic] || 0) + 1;
+    flashSidebarRow(topic);
+    updateSidebarBadge(topic);
 
     // Persistent listeners (e.g. duration-based subscriptions)
     if (state.topicListeners[topic]) {
@@ -166,6 +189,7 @@ function connect(url) {
   });
 
   client.on("error", (err) => {
+    state.connecting = false;
     updateStatusDot(false, true);
     document.getElementById("status-text").textContent = "Error";
     toast(`Connection error: ${err.message || err}`, "error");
@@ -173,22 +197,28 @@ function connect(url) {
 
   client.on("close", () => {
     state.connected = false;
+    state.connecting = false;
     updateStatusDot(false, false);
+    document.getElementById("connect-btn").textContent = "Connect";
     state.seenTopics = [];
     state.watching = null;
+    state.selected = null;
     state.onceCallbacks = {};
     state.topicListeners = {};
+    state.topicMsgCounts = {};
     unpinAllTopics();
     renderSidebar();
     renderMainPlaceholder();
-    scheduleReconnect();
+    if (!state.manualDisconnect) scheduleReconnect();
+    state.manualDisconnect = false;
   });
 }
 
-function updateStatusDot(connected, error) {
+function updateStatusDot(connected, error = false, connecting = false) {
   const dot = document.getElementById("status-dot");
   let modifier = "";
   if (connected) modifier = " connected";
+  else if (connecting) modifier = " connecting";
   else if (error) modifier = " error";
   dot.className = "status-dot" + modifier;
 }
@@ -198,7 +228,10 @@ function updateStatusDot(connected, error) {
 function renderMainPlaceholder() {
   const main = document.getElementById("main-panel");
   if (!state.connected) {
-    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>Connect to MQTT broker to get started.</div></div>`;
+    const msg = state.connecting
+      ? "Connecting…"
+      : "Connect to an MQTT broker to get started.";
+    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>${msg}</div></div>`;
     return;
   }
   main.innerHTML = `
@@ -230,7 +263,7 @@ function renderTopicList() {
   const container = document.getElementById("topics-list");
   container.innerHTML = "";
 
-  let filtered = state.filter
+  const filtered = state.filter
     ? state.seenTopics.filter(t => t.toLowerCase().includes(state.filter.toLowerCase()))
     : state.seenTopics;
 
@@ -243,19 +276,43 @@ function renderTopicList() {
     return;
   }
 
+  // Group topics by first namespace segment (split on first '/')
+  const groups = {}; // prefix -> [topic, ...]
+  const flat = [];   // topics with no '/'
   for (const topic of filtered) {
+    const slash = topic.indexOf("/");
+    if (slash === -1) {
+      flat.push(topic);
+    } else {
+      const prefix = topic.slice(0, slash);
+      (groups[prefix] || (groups[prefix] = [])).push(topic);
+    }
+  }
+
+  function makeTopicRow(topic, displayText, indented) {
     const isActive = state.selected?.name === topic;
-    const btn = document.createElement("button");
-    btn.className = "sidebar-item" + (isActive ? " active" : "");
-    btn.textContent = topic;
-    btn.title = topic;
-    btn.addEventListener("click", () => selectTopic(topic));
+    const count = state.topicMsgCounts[topic] || 0;
+    const isPinned = !!state.pinnedTopics[topic];
 
     const row = document.createElement("div");
     row.className = "sidebar-item-row";
+    row.dataset.topic = topic;
+
+    const btn = document.createElement("button");
+    btn.className = "sidebar-item" +
+      (isActive ? " active" : "") +
+      (indented ? " sidebar-item-indented" : "");
+    btn.textContent = displayText;
+    btn.title = topic;
+    btn.addEventListener("click", () => selectTopic(topic));
+
+    const badge = document.createElement("span");
+    badge.className = "sidebar-msg-count";
+    badge.dataset.topic = topic;
+    badge.textContent = count > 999 ? "999+" : String(count);
+    badge.hidden = count === 0;
 
     const pinBtn = document.createElement("button");
-    const isPinned = !!state.pinnedTopics[topic];
     pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
     pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
     pinBtn.setAttribute("aria-pressed", String(isPinned));
@@ -263,8 +320,87 @@ function renderTopicList() {
     pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(topic); });
 
     row.appendChild(btn);
+    row.appendChild(badge);
     row.appendChild(pinBtn);
-    container.appendChild(row);
+    return row;
+  }
+
+  // Render namespace groups
+  for (const [prefix, topics] of Object.entries(groups)) {
+    if (topics.length === 1) {
+      container.appendChild(makeTopicRow(topics[0], topics[0], false));
+      continue;
+    }
+
+    const isCollapsed = !!state.sidebarCollapsed[`ns:${prefix}`];
+    const groupCount = topics.reduce((sum, t) => sum + (state.topicMsgCounts[t] || 0), 0);
+
+    const header = document.createElement("button");
+    header.className = "sidebar-ns-header";
+    header.setAttribute("aria-expanded", String(!isCollapsed));
+
+    const chevron = document.createElement("span");
+    chevron.className = "sidebar-ns-chevron" + (isCollapsed ? " collapsed" : "");
+
+    header.appendChild(chevron);
+    header.appendChild(document.createTextNode(prefix + "/"));
+
+    const nsBadge = document.createElement("span");
+    nsBadge.className = "sidebar-msg-count sidebar-ns-badge";
+    nsBadge.dataset.ns = prefix;
+    nsBadge.textContent = groupCount > 999 ? "999+" : String(groupCount);
+    nsBadge.hidden = groupCount === 0;
+    header.appendChild(nsBadge);
+
+    header.addEventListener("click", () => {
+      state.sidebarCollapsed[`ns:${prefix}`] = !state.sidebarCollapsed[`ns:${prefix}`];
+      renderTopicList();
+    });
+
+    const itemsEl = document.createElement("div");
+    itemsEl.hidden = isCollapsed;
+    for (const topic of topics) {
+      itemsEl.appendChild(makeTopicRow(topic, topic.slice(prefix.length + 1), true));
+    }
+
+    container.appendChild(header);
+    container.appendChild(itemsEl);
+  }
+
+  // Render flat topics
+  for (const topic of flat) {
+    container.appendChild(makeTopicRow(topic, topic, false));
+  }
+}
+
+function flashSidebarRow(topic) {
+  const row = document.querySelector(`.sidebar-item-row[data-topic="${CSS.escape(topic)}"]`);
+  if (!row) return;
+  row.classList.remove("flash-new");
+  void row.offsetWidth; // force reflow to restart animation
+  row.classList.add("flash-new");
+  row.addEventListener("animationend", () => row.classList.remove("flash-new"), { once: true });
+}
+
+function updateSidebarBadge(topic) {
+  const count = state.topicMsgCounts[topic] || 0;
+  const badge = document.querySelector(`.sidebar-msg-count[data-topic="${CSS.escape(topic)}"]`);
+  if (badge) {
+    badge.textContent = count > 999 ? "999+" : String(count);
+    badge.hidden = false;
+  }
+  // Update namespace group badge
+  const slash = topic.indexOf("/");
+  if (slash !== -1) {
+    const prefix = topic.slice(0, slash);
+    const nsBadge = document.querySelector(`.sidebar-ns-badge[data-ns="${CSS.escape(prefix)}"]`);
+    if (nsBadge) {
+      const groupCount = state.seenTopics
+        .filter(t => t.startsWith(prefix + "/"))
+        .reduce((sum, t) => sum + (state.topicMsgCounts[t] || 0), 0);
+      nsBadge.textContent = groupCount > 999 ? "999+" : String(groupCount);
+      nsBadge.hidden = false;
+    }
   }
 }
 
@@ -844,7 +980,7 @@ function initChat() {
     const open = panel.hidden;
     panel.hidden = !open;
     btn.setAttribute("aria-expanded", String(open));
-    btn.textContent = open ? "Close Chat" : "AI Chat";
+    btn.classList.toggle("active", open);
   });
 }
 
@@ -853,7 +989,8 @@ function applyModelSelection(value) {
   chatState.provider = provider;
   chatState.model = rest.join(":");
   const isGitHub = provider === "github";
-  document.getElementById("chat-claude-bar").style.display = isGitHub ? "none" : "";
+  const isLocal = provider === "local";
+  document.getElementById("chat-claude-bar").style.display = (!isGitHub && !isLocal) ? "" : "none";
   document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
   document.getElementById("github-notice").hidden = !isGitHub || !!localStorage.getItem("webmcp-github-notice-dismissed");
   if (isGitHub) updateGitHubAuthBar();
@@ -1009,7 +1146,7 @@ async function sendChatMsg() {
   if (!text || chatState.busy) return;
 
   const key = chatState.provider === "github" ? chatState.githubAuth?.token : chatState.claudeKey;
-  if (!key) {
+  if (chatState.provider !== "local" && !key) {
     toast(chatState.provider === "github" ? "Connect GitHub above" : "Enter your Anthropic API key first", "error");
     return;
   }
@@ -1024,7 +1161,9 @@ async function sendChatMsg() {
   showChatSpinner();
 
   try {
-    if (chatState.provider === "github") {
+    if (chatState.provider === "local") {
+      await runConversationLocal(chatState.abortCtrl.signal);
+    } else if (chatState.provider === "github") {
       await runConversationGitHub(key, chatState.abortCtrl.signal);
     } else {
       await runConversationClaude(key, chatState.abortCtrl.signal);
@@ -1036,6 +1175,62 @@ async function sendChatMsg() {
     chatState.abortCtrl = null;
     document.getElementById("chat-send").disabled = false;
     document.getElementById("chat-abort").hidden = true;
+  }
+}
+
+// ── Local Claude proxy (personal account via claude CLI) ──────────────────────
+
+const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
+
+function buildLocalPrompt() {
+  const parts = [
+    "You are an AI assistant for an MQTT IoT dashboard. Respond with plain text only — do not use any tools or run any commands.",
+  ];
+  if (isConnected()) {
+    parts.push(`MQTT broker: ${state.url}`);
+    parts.push(`Known topics (${state.seenTopics.length}): ${state.seenTopics.slice(0, 20).join(", ")}${state.seenTopics.length > 20 ? "…" : ""}`);
+  } else {
+    parts.push("MQTT broker: not connected.");
+  }
+  if (state.selected) parts.push(`Currently viewing topic: ${state.selected.name}`);
+  parts.push("Be concise.", "");
+  for (const msg of chatState.convMsgs) {
+    const label = msg.role === "user" ? "User" : "Assistant";
+    const content = typeof msg.content === "string"
+      ? msg.content
+      : msg.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+    if (content) parts.push(`${label}: ${content}`);
+  }
+  return parts.join("\n");
+}
+
+async function runConversationLocal(signal) {
+  let res;
+  try {
+    res = await fetch(LOCAL_PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+      body: JSON.stringify({ prompt: buildLocalPrompt() }),
+    });
+  } catch {
+    throw new Error("Local Claude proxy not running. Start it with: make proxy");
+  }
+  if (!res.ok) throw new Error(`Proxy error ${res.status}`);
+
+  let responseText = "";
+  for await (const line of readStreamLines(res.body)) {
+    if (!line.trim()) continue;
+    try {
+      const evt = JSON.parse(line);
+      if (evt.type === "result" && evt.subtype === "success") responseText = evt.result;
+    } catch {}
+  }
+
+  hideChatSpinner();
+  if (responseText) {
+    appendChatMsg("assistant", responseText);
+    chatState.convMsgs.push({ role: "assistant", content: responseText });
   }
 }
 
@@ -1304,9 +1499,66 @@ function appendChatMsg(role, text) {
   } else {
     el.textContent = text;
   }
+  if (role === "user") {
+    const msgIndex = chatState.convMsgs.length; // convMsgs.push happens after this call
+    el.addEventListener("contextmenu", e => showMsgContextMenu(e, el, text, msgIndex));
+  }
   container.appendChild(el);
   scrollChatBottom();
   return el;
+}
+
+function truncateConvAt(msgEl, msgIndex) {
+  if (chatState.busy) {
+    chatState.abortCtrl?.abort();
+    chatState.busy = false;
+    document.getElementById("chat-send").disabled = false;
+    document.getElementById("chat-abort").hidden = true;
+  }
+  hideChatSpinner();
+  while (msgEl.nextSibling) msgEl.nextSibling.remove();
+  msgEl.remove();
+  chatState.convMsgs.splice(msgIndex);
+}
+
+function showMsgContextMenu(e, msgEl, text, msgIndex) {
+  e.preventDefault();
+  document.getElementById("chat-ctx-menu")?.remove();
+
+  const menu = document.createElement("div");
+  menu.id = "chat-ctx-menu";
+  menu.className = "chat-ctx-menu";
+  menu.innerHTML = `
+    <button class="chat-ctx-item" data-action="edit">Edit</button>
+    <button class="chat-ctx-item" data-action="resend">Resend</button>
+  `;
+  menu.style.left = `${e.clientX}px`;
+  menu.style.top  = `${e.clientY}px`;
+  document.body.appendChild(menu);
+
+  // Nudge back on-screen if clipped
+  const r = menu.getBoundingClientRect();
+  if (r.right  > window.innerWidth)  menu.style.left = `${e.clientX - r.width}px`;
+  if (r.bottom > window.innerHeight) menu.style.top  = `${e.clientY - r.height}px`;
+
+  menu.addEventListener("click", e => {
+    const action = e.target.dataset.action;
+    if (!action) return;
+    menu.remove();
+    truncateConvAt(msgEl, msgIndex);
+    const input = document.getElementById("chat-input");
+    input.value = text;
+    if (action === "resend") {
+      sendChatMsg();
+    } else {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  });
+
+  const dismiss = () => menu.remove();
+  setTimeout(() => document.addEventListener("click", dismiss, { once: true }), 0);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") menu.remove(); }, { once: true });
 }
 
 function nextGptModel() {
@@ -1414,13 +1666,47 @@ function renderMarkdown(text) {
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 
+document.getElementById("topbar-home-btn").addEventListener("click", () => {
+  state.selected = null;
+  renderSidebar();
+  renderMainPlaceholder();
+});
+
 document.getElementById("connect-btn").addEventListener("click", () => {
+  if (state.connected) {
+    state.manualDisconnect = true;
+    cancelReconnect();
+    state.mqttClient?.end(true);
+    return;
+  }
   const url = document.getElementById("url-input").value.trim();
   if (url) { cancelReconnect(); connect(url); }
 });
 
 document.getElementById("url-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("connect-btn").click();
+});
+
+// ── Broker presets popover ────────────────────────────────────────────────────
+
+const presetsBtn     = document.getElementById("url-presets-btn");
+const presetsPopover = document.getElementById("url-presets-popover");
+
+presetsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  presetsPopover.hidden = !presetsPopover.hidden;
+});
+
+presetsPopover.querySelectorAll(".url-preset-item").forEach(item => {
+  item.addEventListener("click", () => {
+    document.getElementById("url-input").value = item.dataset.url;
+    presetsPopover.hidden = true;
+  });
+});
+
+document.addEventListener("click", () => { presetsPopover.hidden = true; });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") presetsPopover.hidden = true;
 });
 
 document.getElementById("sidebar-filter").addEventListener("input", (e) => {
@@ -1522,9 +1808,72 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".webmcp-badge-wrap")) popover.hidden = true;
 });
 
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    const popover = document.getElementById("webmcp-popover");
-    if (popover && !popover.hidden) { popover.hidden = true; }
+// ── Settings popover ──────────────────────────────────────────────────────────
+
+const settingsBtn     = document.getElementById("settings-btn");
+const settingsPopover = document.getElementById("settings-popover");
+
+settingsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const opening = settingsPopover.hidden;
+  settingsPopover.hidden = !opening;
+  settingsBtn.setAttribute("aria-expanded", String(opening));
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".settings-wrap")) {
+    settingsPopover.hidden = true;
+    settingsBtn.setAttribute("aria-expanded", "false");
   }
 });
+
+// ── Theme toggle ──────────────────────────────────────────────────────────────
+
+function applyTheme(theme) {
+  localStorage.setItem("webmcp-theme", theme);
+  if (theme === "dark") {
+    document.documentElement.setAttribute("data-theme", "dark");
+  } else if (theme === "light") {
+    document.documentElement.setAttribute("data-theme", "light");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  document.querySelectorAll(".theme-opt").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.theme === theme);
+  });
+}
+
+document.querySelectorAll(".theme-opt").forEach(btn => {
+  btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
+});
+
+applyTheme(localStorage.getItem("webmcp-theme") || "system");
+
+// ── Chat model label ──────────────────────────────────────────────────────────
+
+function updateChatModelLabel() {
+  const sel = document.getElementById("chat-model-select");
+  const label = document.getElementById("chat-model-label");
+  if (!sel || !label) return;
+  const opt = sel.options[sel.selectedIndex];
+  const text = opt?.text || "";
+  // Show just the model name, not the provider prefix
+  label.textContent = text.replace(/^GitHub · /, "").replace(/^Claude /, "");
+}
+
+document.getElementById("chat-model-select").addEventListener("change", updateChatModelLabel);
+updateChatModelLabel();
+
+// Escape closes all popovers
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    settingsPopover.hidden = true;
+    settingsBtn.setAttribute("aria-expanded", "false");
+    const wmcp = document.getElementById("webmcp-popover");
+    if (wmcp) wmcp.hidden = true;
+  }
+});
+
+// Restore saved URL into input and auto-connect on load
+document.getElementById("url-input").value = state.url;
+connect(state.url);

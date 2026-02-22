@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#f0efeb">
   <title>MQTT AI Dashboard</title>
-  <link rel="icon" href="logo.jpg">
-  <link rel="apple-touch-icon" href="logo.jpg">
+  <link rel="icon" href="logo.png">
+  <link rel="apple-touch-icon" href="logo.png">
   <meta property="og:title" content="MQTT AI Dashboard">
   <meta property="og:description" content="Inspect and control robots from the browser via MQTT">
-  <meta property="og:image" content="logo.jpg">
+  <meta property="og:image" content="logo.png">
   <link rel="stylesheet" href="style.css">
   <link rel="preload" href="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js" as="script">
   <link rel="preload" href="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js" as="script">
@@ -20,23 +20,91 @@
 
   <!-- Topbar -->
   <header class="topbar">
-    <img src="logo.jpg" class="topbar-logo" alt="MQTT AI Dashboard logo" width="28" height="28">
-    <span class="topbar-title">MQTT AI Dashboard</span>
+    <button class="topbar-home-btn" id="topbar-home-btn" title="Go to main page" aria-label="Go to main page">
+      <img src="logo.png" class="topbar-logo" alt="MQTT AI Dashboard logo" width="28" height="28">
+      <span class="topbar-title">MQTT AI Dashboard</span>
+    </button>
     <div class="status-row">
       <span class="status-dot" id="status-dot"></span>
       <span id="status-text">Disconnected</span>
     </div>
     <div class="topbar-spacer"></div>
-    <input
-      class="url-input"
-      id="url-input"
-      type="text"
-      value="wss://broker.hivemq.com:8884/mqtt"
-      aria-label="MQTT broker WebSocket URL"
-      spellcheck="false"
-    >
+    <div class="url-wrap">
+      <input
+        class="url-input"
+        id="url-input"
+        type="text"
+        value="wss://broker.hivemq.com:8884/mqtt"
+        aria-label="MQTT broker WebSocket URL"
+        spellcheck="false"
+      >
+      <button class="url-presets-btn" id="url-presets-btn" aria-label="Broker presets" title="Broker presets">▾</button>
+      <div class="url-presets-popover" id="url-presets-popover" hidden role="listbox" aria-label="Broker presets">
+        <button class="url-preset-item" data-url="wss://broker.hivemq.com:8884/mqtt" role="option">
+          <span class="url-preset-label">HiveMQ</span>
+          <span class="url-preset-note">public cloud</span>
+        </button>
+        <button class="url-preset-item" data-url="wss://test.mosquitto.org:8081" role="option">
+          <span class="url-preset-label">test.mosquitto.org</span>
+          <span class="url-preset-note">public cloud</span>
+        </button>
+        <button class="url-preset-item" data-url="ws://localhost:9001" role="option">
+          <span class="url-preset-label">localhost:9001</span>
+          <span class="url-preset-note">local only · make mqtt</span>
+        </button>
+      </div>
+    </div>
     <button class="btn btn-primary btn-sm" id="connect-btn">Connect</button>
     <button class="btn btn-sm" id="chat-panel-toggle" aria-expanded="false" aria-controls="chat-panel">AI Chat</button>
+    <div class="settings-wrap">
+      <button class="settings-btn" id="settings-btn" aria-label="Settings" aria-expanded="false" aria-controls="settings-popover" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+          <path d="M6.08 1.5a.5.5 0 0 0-.495.43l-.198 1.382a4.5 4.5 0 0 0-.968.565L3.1 3.29a.5.5 0 0 0-.617.172L1.5 4.9a.5.5 0 0 0 .1.657l1.1.9A4.5 4.5 0 0 0 2.6 7.5c0 .328.034.648.1.943l-1.1.9a.5.5 0 0 0-.1.657l.984 1.438a.5.5 0 0 0 .617.172l1.319-.588c.298.213.617.398.968.565l.198 1.383a.5.5 0 0 0 .495.43h1.84a.5.5 0 0 0 .495-.43l.198-1.383a4.5 4.5 0 0 0 .968-.565l1.319.588a.5.5 0 0 0 .617-.172L13.4 10a.5.5 0 0 0-.1-.657l-1.1-.9c.066-.295.1-.615.1-.943s-.034-.648-.1-.943l1.1-.9A.5.5 0 0 0 13.5 4.9l-.984-1.438a.5.5 0 0 0-.617-.172l-1.319.588a4.5 4.5 0 0 0-.968-.565L9.415 1.93A.5.5 0 0 0 8.92 1.5H6.08ZM7.5 9.5a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <div class="settings-popover" id="settings-popover" hidden role="dialog" aria-label="Settings">
+
+        <div class="settings-section">
+          <div class="settings-section-label">Appearance</div>
+          <div class="theme-toggle" role="group" aria-label="Color theme">
+            <button class="theme-opt" data-theme="system">System</button>
+            <button class="theme-opt" data-theme="light">Light</button>
+            <button class="theme-opt" data-theme="dark">Dark</button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-label">AI Model</div>
+          <select class="chat-model-select" id="chat-model-select" aria-label="Model">
+            <option value="anthropic:claude-sonnet-4-6">Claude Sonnet 4.6</option>
+            <option value="local:claude">Claude · Personal account</option>
+            <option value="github:openai/gpt-4.1">GitHub · GPT-4.1</option>
+            <option value="github:openai/gpt-4.1-mini">GitHub · GPT-4.1 mini</option>
+            <option value="github:openai/gpt-4.1-nano">GitHub · GPT-4.1 nano</option>
+            <option value="github:openai/gpt-5">GitHub · GPT-5</option>
+            <option value="github:openai/gpt-5-mini">GitHub · GPT-5 mini</option>
+          </select>
+        </div>
+
+        <form class="settings-section" id="chat-claude-bar" onsubmit="event.preventDefault()">
+          <div class="settings-section-label">Anthropic API Key</div>
+          <div class="settings-auth-row">
+            <input type="password" class="chat-auth-input" id="chat-api-key" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key">
+            <button type="submit" class="btn btn-sm" id="chat-key-save">Save</button>
+          </div>
+        </form>
+
+        <div class="settings-section" id="chat-github-bar">
+          <!-- rendered by updateGitHubAuthBar() -->
+        </div>
+
+        <div class="github-notice settings-notice" id="github-notice" hidden>
+          <span>Tool calls may be less reliable than Claude.</span>
+          <button class="github-notice-dismiss" id="github-notice-dismiss" aria-label="Dismiss">✕</button>
+        </div>
+
+      </div>
+    </div>
   </header>
 
   <!-- Body -->
@@ -114,35 +182,23 @@
     <aside class="chat-panel" id="chat-panel" hidden>
       <div class="chat-header">
         <span class="chat-header-title">AI Chat</span>
+        <span class="chat-model-label" id="chat-model-label">Claude</span>
         <button class="btn btn-sm" id="chat-clear">Clear</button>
-      </div>
-      <div class="chat-config">
-        <select class="chat-model-select" id="chat-model-select" aria-label="Model">
-          <option value="anthropic:claude-sonnet-4-6">Claude Sonnet 4.6</option>
-          <option value="github:openai/gpt-4.1">GitHub · GPT-4.1</option>
-          <option value="github:openai/gpt-4.1-mini">GitHub · GPT-4.1 mini</option>
-          <option value="github:openai/gpt-4.1-nano">GitHub · GPT-4.1 nano</option>
-          <option value="github:openai/gpt-5">GitHub · GPT-5</option>
-          <option value="github:openai/gpt-5-mini">GitHub · GPT-5 mini</option>
-        </select>
-      </div>
-      <div class="chat-auth-bar" id="chat-claude-bar">
-        <input type="password" class="chat-auth-input" id="chat-api-key" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key">
-        <button class="btn btn-sm" id="chat-key-save">Save</button>
-      </div>
-      <div class="chat-auth-bar" id="chat-github-bar">
-        <!-- rendered by updateGitHubAuthBar() -->
-      </div>
-      <div class="github-notice" id="github-notice" hidden>
-        <span>Tool calls and responses may be less reliable than Claude.</span>
-        <button class="github-notice-dismiss" id="github-notice-dismiss" aria-label="Dismiss">✕</button>
       </div>
       <div class="chat-messages" id="chat-messages" aria-live="polite" aria-label="Chat messages"></div>
       <div class="chat-input-area">
-        <textarea class="chat-input" id="chat-input" placeholder="Ask about your robot… (⌘↵ to send)" rows="3" aria-label="Chat message"></textarea>
-        <div class="chat-input-row">
-          <button class="btn btn-primary btn-sm" id="chat-send">Send</button>
-          <button class="btn btn-sm" id="chat-abort" hidden>Stop</button>
+        <div class="chat-input-wrap">
+          <textarea class="chat-input" id="chat-input" placeholder="Ask about your robot… (⌘↵ to send)" rows="3" aria-label="Chat message"></textarea>
+          <button class="chat-send-btn" id="chat-send" aria-label="Send message" title="Send (⌘↵)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="chat-abort-btn" id="chat-abort" hidden aria-label="Stop generating" title="Stop">
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <rect width="11" height="11" rx="2" fill="currentColor"/>
+            </svg>
+          </button>
         </div>
       </div>
     </aside>
