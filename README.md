@@ -6,11 +6,7 @@ Browser dashboard for controlling physical robots with AI. The AI chat calls Cla
 
 The browser runs everything: MQTT.js connects to a Mosquitto broker over WebSocket. Claude is called directly from the browser with MQTT tool definitions, and when Claude responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes to the same broker over TCP.
 
-```
-Browser
-  ├── MQTT.js (WebSocket → port 9001)  ←→  Mosquitto (Docker)  ←→  ESP32-CAM (TCP 1883)
-  └── Claude API (direct)
-```
+![Architecture and sequence diagrams](diagrams.jpg)
 
 ## Prerequisites
 
