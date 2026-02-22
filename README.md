@@ -1,34 +1,22 @@
-# ROS AI Dashboard
+# MQTT AI Dashboard
 
 Browser dashboard for controlling physical robots with AI. The AI chat calls Claude directly from the browser — no backend, no MCP server, no Python.
 
 ## Architecture
 
-![Architecture diagram](diagram.png)
+The browser runs everything: MQTT.js connects to a Mosquitto broker over WebSocket. Claude is called directly from the browser with MQTT tool definitions, and when Claude responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes to the same broker over TCP.
 
-The browser runs everything: it calls the Claude API with ROS tool definitions, and when Claude responds with a tool call, roslibjs executes it locally and forwards it to rosbridge over WebSocket. Claude never talks to rosbridge directly.
-
-The only thing that needs to run locally is rosbridge (via Docker), which bridges WebSocket to your ROS topics and hardware.
+```
+Browser
+  ├── MQTT.js (WebSocket → port 9001)  ←→  Mosquitto (Docker)  ←→  ESP32-CAM (TCP 1883)
+  └── Claude API (direct)
+```
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) — for rosbridge
+- [Docker](https://docs.docker.com/get-docker/) — for Mosquitto
 - [Homebrew](https://brew.sh/) — to install host dependencies
 - Anthropic API key — for the AI chat
-
-## Host vs Docker split
-
-USB and firmware flashing run on your host machine. Rosbridge runs in Docker. They're kept separate intentionally:
-
-```
-Host machine (macOS)
-  ├── CP210x driver       ← kernel extension, talks to USB hardware
-  ├── arduino-cli         ← compiles and uploads firmware over USB
-  └── Docker
-        └── rosbridge     ← bridges WebSocket to ROS network over WiFi
-```
-
-`make setup` installs the host-side dependencies. Docker handles everything else.
 
 ## Quickstart
 
@@ -36,46 +24,62 @@ Host machine (macOS)
 ```bash
 make setup
 ```
-After install, macOS will prompt you to allow the CP210x driver in **System Preferences > Privacy & Security**. Do that before proceeding.
+After install, macOS will prompt you to allow the CP210x driver in **System Preferences > Privacy & Security**. Do that before flashing.
 
-**2. Start rosbridge**
-```bash
-make rosbridge
-```
-Note the IP it prints — you'll need it in the next step.
-
-**3. Configure credentials** (first time only)
-
+**2. Configure credentials** (first time only)
 ```bash
 cp config.mk.example config.mk
 ```
+Edit `config.mk` with your WiFi SSID and password.
 
-Edit `config.mk` with your WiFi credentials, the IP from step 2, and your ESP32 USB port.
+**3. Start MQTT broker**
+```bash
+make mqtt
+```
+Note the IP it prints — that's your `MQTT_IP` (auto-detected from `en0`).
 
-**4. Flash firmware** (first time only)
+**4. Flash firmware** (first time, via USB)
 ```bash
 make flash
 ```
+After boot, the ESP32 prints its IP. Add it to `config.mk` as `ESP32_IP` to enable OTA.
 
 **5. Open the dashboard**
+```bash
+make preview
+```
+Go to [http://localhost:8080](http://localhost:8080) and connect to `ws://localhost:9001`.
 
-Go to [neevs.io/ros](https://neevs.io/ros) and connect to `ws://localhost:9090`.
+Or use the hosted version at [neevs.io/ros](https://neevs.io/ros).
 
 **6. Control your robot**
 
 Browse topics and publish manually, or open the AI chat panel, enter your Anthropic API key, and describe what you want the robot to do.
 
-## Repo Structure
+## OTA updates
+
+After the first USB flash, subsequent firmware updates can go over WiFi:
+
+```bash
+make ota
+```
+
+Requires `ESP32_IP` set in `config.mk` (printed by the ESP32 on boot).
+
+## Repo structure
 
 ```
-dashboard/   Static web app — AI chat (Claude API) + ROS topic/node/service browser
-docker/      Minimal rosbridge Docker setup (rosbridge + rosapi, no simulation)
-firmware/    ESP32 Arduino sketch + flash script
-Makefile     make setup     — install host dependencies (once per machine)
-             make rosbridge — start rosbridge
-             make flash     — compile and upload ESP32 firmware
+dashboard/   Static web app — AI chat (Claude API) + MQTT topic browser
+docker/      Mosquitto MQTT broker config (MQTT: 1883, WebSocket: 9001)
+firmware/    ESP32 Arduino sketch — LED control via MQTT, OTA support
+Makefile     make setup    — install host dependencies (once per machine)
+             make mqtt     — start Mosquitto broker
+             make preview  — serve dashboard at http://localhost:8080
+             make flash    — compile and upload firmware over USB (first time)
+             make ota      — upload firmware over WiFi (requires ESP32_IP)
+             make monitor  — open serial console
 ```
 
 ## Notes
 
-The dashboard also attempts to register ROS tools via the [W3C WebMCP spec](https://github.com/webmachinelearning/webmcp) (`navigator.modelContext`), which would expose them to native browser AI agents. This requires Chrome 146+ Canary with `chrome://flags/#webmcp-for-testing`. The AI chat works without this — it's an optional enhancement for when browsers natively support AI agents.
+The dashboard also registers MQTT tools via the [W3C WebMCP spec](https://github.com/webmachinelearning/webmcp) (`navigator.modelContext`), which exposes them to native browser AI agents. This requires Chrome 146+ Canary with `chrome://flags/#webmcp-for-testing`. The AI chat works without this — it's an optional enhancement.

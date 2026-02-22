@@ -3,5 +3,7 @@
 
 WIFI_SSID = your_wifi_ssid
 WIFI_PASS = your_wifi_password
-ROS_IP    = 192.168.1.1        # run `make rosbridge` to see your IP
-PORT      = /dev/cu.usbserial-XXXXXXXX  # your ESP32 USB port
+# Both PORT and MQTT_IP are auto-detected. Override here only if needed.
+# PORT    = /dev/cu.usbserial-XXXXXXXX  # auto-detected from /dev/cu.usbserial-*
+# MQTT_IP = 192.168.1.1                 # auto-detected via ipconfig getifaddr en0
+ESP32_IP  =                             # ESP32 IP for OTA — shown in Serial Monitor after boot

@@ -1,4 +1,5 @@
 dashboard/node_modules/
 dashboard/dist/
 config.json
+config.js
 config.mk

@@ -1,14 +1,10 @@
 services:
-  rosbridge:
-    build:
-      context: .
-      dockerfile: Dockerfile.rosbridge
-    container_name: rosbridge
-    environment:
-      - ROS_DISTRO=jazzy
-      - CYCLONEDDS_URI=file:///cyclonedds.xml
-    volumes:
-      - ./launch_rosbridge.launch.py:/ros2_ws/launch/launch_rosbridge.launch.py:ro
+  mqtt:
+    image: eclipse-mosquitto:latest
+    container_name: mqtt
     ports:
-      - "9090:9090"
-    command: ["ros2", "launch", "/ros2_ws/launch/launch_rosbridge.launch.py"]
+      - "1883:1883"   # MQTT (for ESP32)
+      - "9001:9001"   # WebSocket (for browser dashboard)
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped

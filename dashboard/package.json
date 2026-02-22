@@ -1,5 +1,5 @@
 {
-  "name": "ros-ai-dashboard",
+  "name": "mqtt-ai-dashboard",
   "private": true,
   "type": "module",
   "scripts": {

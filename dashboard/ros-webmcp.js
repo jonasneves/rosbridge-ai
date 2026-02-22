@@ -1,26 +1,23 @@
-/* ros-webmcp.js — roslibjs connection + WebMCP tool registration + UI logic */
+/* mqtt-webmcp.js — MQTT.js connection + WebMCP tool registration + UI logic */
 
 // ── State ────────────────────────────────────────────────────────────────────
 
 const state = {
-  ros: null,
+  mqttClient: null,
   connected: false,
-  url: "ws://localhost:9090",
-  topics: [],
-  topicTypes: {},         // topic -> type string
-  nodes: [],
-  services: [],
-  selected: null,         // { kind: "topic"|"node"|"service", name: string }
-  watching: null,         // active ROSLIB.Topic subscription for watch mode
-  filter: "",             // sidebar substring filter
-  publishHistory: {},     // topic -> string[] (max 10, newest first)
-  continuousPublish: null,// { timer, rosTopic } | null
-  pinnedTopics: {},       // topic -> { msgType, sub, lastMsg, trail[] }
-  toolLog: [],            // { id, toolName, params, result, ts, durationMs }[]
-  reconnect: null,        // { attempts, timer } | null
-  sidebarCollapsed: { topics: false, nodes: false, services: false },
-  hideSystemServices: false,
-  hideSystemNodes: false,
+  url: "ws://localhost:9001",
+  seenTopics: [],           // topics seen via '#' subscription
+  watching: null,           // topic name currently being live-watched
+  topicListeners: {},       // topic -> Set<callback> for persistent listeners
+  onceCallbacks: {},        // topic -> callback[] for one-shot receives
+  selected: null,           // { kind: "topic", name: string }
+  filter: "",
+  publishHistory: {},       // topic -> string[] (max 10, newest first)
+  continuousPublish: null,  // { timer } | null
+  pinnedTopics: {},         // topic -> { lastMsg: string | null }
+  toolLog: [],
+  reconnect: null,
+  sidebarCollapsed: { topics: false },
 };
 
 let _toolLogId = 0;
@@ -29,18 +26,6 @@ let _toolLogId = 0;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function callRosapi(serviceName, serviceType, request) {
-  return new Promise((resolve, reject) => {
-    if (!state.ros || !state.connected) {
-      reject(new Error("Not connected to rosbridge"));
-      return;
-    }
-    const svc = new ROSLIB.Service({ ros: state.ros, name: serviceName, serviceType });
-    const req = new ROSLIB.ServiceRequest(request);
-    svc.callService(req, resolve, reject);
-  });
 }
 
 function toast(msg, kind = "default", durationMs = 3000) {
@@ -54,6 +39,24 @@ function toast(msg, kind = "default", durationMs = 3000) {
 
 function cssId(str) {
   return str.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function attachJsonFormatter(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("blur", () => {
+    const val = el.value.trim();
+    if (!val) return;
+    try { el.value = JSON.stringify(JSON.parse(val), null, 2); } catch { /* leave as-is */ }
+  });
 }
 
 // ── Auto-reconnect ────────────────────────────────────────────────────────────
@@ -89,35 +92,84 @@ function cancelReconnect() {
 
 function connect(url) {
   cancelReconnect();
-  if (state.ros) {
-    state.ros.close();
-    state.ros = null;
+  if (state.mqttClient) {
+    state.mqttClient.end(true);
+    state.mqttClient = null;
   }
   stopWatching();
 
   state.url = url;
-  const ros = new ROSLIB.Ros({ url });
-  state.ros = ros;
+  const client = mqtt.connect(url, { reconnectPeriod: 0 }); // manual reconnect
+  state.mqttClient = client;
 
-  ros.on("connection", () => {
+  client.on("connect", () => {
     cancelReconnect();
     state.connected = true;
     updateStatusDot(true, false);
     document.getElementById("status-text").textContent = url;
-    refreshAll();
+    client.subscribe("#");         // passively discover all active topics
+    client.subscribe("devices/#"); // device announcements (retained, replayed immediately)
+    renderSidebar();
+    renderMainPlaceholder();
   });
 
-  ros.on("error", (err) => {
-    state.connected = false;
+  client.on("message", (topic, message) => {
+    const msg = message.toString();
+
+    // Handle device announcements — auto-add advertised topics
+    if (topic.startsWith("devices/")) {
+      try {
+        const { topics } = JSON.parse(msg);
+        let changed = false;
+        for (const t of topics) {
+          if (!state.seenTopics.includes(t)) { state.seenTopics.push(t); changed = true; }
+        }
+        if (changed) { renderSidebar(); if (!state.selected) renderMainPlaceholder(); }
+      } catch { /* ignore malformed announcements */ }
+      return;
+    }
+
+    // Track seen topics
+    if (!state.seenTopics.includes(topic)) {
+      state.seenTopics.push(topic);
+      renderSidebar();
+      if (!state.selected) renderMainPlaceholder();
+    }
+
+    // Persistent listeners (e.g. duration-based subscriptions)
+    if (state.topicListeners[topic]) {
+      for (const cb of state.topicListeners[topic]) cb(msg);
+    }
+
+    // One-shot callbacks
+    if (state.onceCallbacks[topic]?.length) {
+      const toCall = state.onceCallbacks[topic].splice(0);
+      for (const cb of toCall) cb(msg);
+    }
+
+    // Live watch panel
+    if (state.watching === topic) showMsgCard(msg);
+
+    // Pinned cards
+    if (state.pinnedTopics[topic]) {
+      state.pinnedTopics[topic].lastMsg = msg;
+      updateWatchCard(topic);
+    }
+  });
+
+  client.on("error", (err) => {
     updateStatusDot(false, true);
     document.getElementById("status-text").textContent = "Error";
-    toast(`Connection error: ${err}`, "error");
+    toast(`Connection error: ${err.message || err}`, "error");
   });
 
-  ros.on("close", () => {
+  client.on("close", () => {
     state.connected = false;
     updateStatusDot(false, false);
-    Object.assign(state, { topics: [], nodes: [], services: [], selected: null });
+    state.seenTopics = [];
+    state.watching = null;
+    state.onceCallbacks = {};
+    state.topicListeners = {};
     unpinAllTopics();
     renderSidebar();
     renderMainPlaceholder();
@@ -133,198 +185,100 @@ function updateStatusDot(connected, error) {
   dot.className = "status-dot" + modifier;
 }
 
-// ── Discovery ─────────────────────────────────────────────────────────────────
-
-async function refreshAll() {
-  await Promise.all([loadTopics(), loadNodes(), loadServices()]);
-  renderSidebar();
-  if (!state.selected) renderMainPlaceholder();
-}
-
-async function loadTopics() {
-  try {
-    const res = await callRosapi("/rosapi/topics", "rosapi/Topics", {});
-    state.topics = res.topics || [];
-    const types = res.types || [];
-    state.topicTypes = Object.fromEntries(state.topics.map((t, i) => [t, types[i] || ""]));
-  } catch {
-    state.topics = [];
-  }
-}
-
-async function loadNodes() {
-  try {
-    const res = await callRosapi("/rosapi/nodes", "rosapi/Nodes", {});
-    state.nodes = res.nodes || [];
-  } catch {
-    state.nodes = [];
-  }
-}
-
-async function loadServices() {
-  try {
-    const res = await callRosapi("/rosapi/services", "rosapi/Services", {});
-    state.services = res.services || [];
-  } catch {
-    state.services = [];
-  }
-}
-
 // ── Sidebar rendering ─────────────────────────────────────────────────────────
-
-function isSystemNode(name) {
-  return name.startsWith("/rosapi") ||
-    name.startsWith("/rosbridge") ||
-    name.startsWith("/_");
-}
-
-const SYSTEM_SERVICE_SUFFIXES = [
-  "/describe_parameters",
-  "/get_parameter_types",
-  "/get_parameters",
-  "/list_parameters",
-  "/set_parameters",
-  "/set_parameters_atomically",
-];
-
-function isSystemService(name) {
-  return name.startsWith("/rosapi/") ||
-    name.startsWith("/rosbridge_websocket/") ||
-    SYSTEM_SERVICE_SUFFIXES.some(s => name.endsWith(s));
-}
-
-function countVisible(items, kind) {
-  const sf = SYSTEM_FILTERS[kind];
-  return (sf && state[sf.key]) ? items.filter(n => !sf.fn(n)).length : items.length;
-}
 
 function renderMainPlaceholder() {
   const main = document.getElementById("main-panel");
   if (!state.connected) {
-    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>Connect to rosbridge to get started.</div></div>`;
+    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>Connect to MQTT broker to get started.</div></div>`;
     return;
   }
-  const nodeCount = countVisible(state.nodes, "node");
-  const svcCount = countVisible(state.services, "service");
   main.innerHTML = `
     <div class="conn-summary">
       <div class="conn-summary-title">Connected</div>
       <div class="conn-url">${escHtml(state.url)}</div>
       <div class="conn-stats">
         <div class="conn-stat">
-          <span class="conn-stat-value">${state.topics.length}</span>
+          <span class="conn-stat-value">${state.seenTopics.length}</span>
           <span class="conn-stat-label">Topics</span>
         </div>
-        <div class="conn-stat">
-          <span class="conn-stat-value">${nodeCount}</span>
-          <span class="conn-stat-label">Nodes</span>
-        </div>
-        <div class="conn-stat">
-          <span class="conn-stat-value">${svcCount}</span>
-          <span class="conn-stat-label">Services</span>
-        </div>
       </div>
-      <div class="conn-hint">← select a topic, node, or service to inspect</div>
+      <div class="conn-hint">← select a topic to inspect or publish</div>
     </div>
   `;
 }
 
 function renderSidebar() {
-  renderList("topics-list", state.topics, "topic");
-  renderList("nodes-list", state.nodes, "node");
-  renderList("services-list", state.services, "service");
-  for (const section of ["topics", "nodes", "services"]) {
-    const listEl = document.getElementById(`${section}-list`);
-    const btn = document.getElementById(`section-toggle-${section}`);
-    const chevron = btn?.parentElement?.querySelector(".sidebar-heading-chevron");
-    if (listEl) listEl.hidden = state.sidebarCollapsed[section];
-    if (btn) btn.setAttribute("aria-expanded", String(!state.sidebarCollapsed[section]));
-    if (chevron) chevron.classList.toggle("collapsed", state.sidebarCollapsed[section]);
-  }
+  renderTopicList();
+  const listEl = document.getElementById("topics-list");
+  const btn = document.getElementById("section-toggle-topics");
+  const chevron = btn?.parentElement?.querySelector(".sidebar-heading-chevron");
+  if (listEl) listEl.hidden = state.sidebarCollapsed.topics;
+  if (btn) btn.setAttribute("aria-expanded", String(!state.sidebarCollapsed.topics));
+  if (chevron) chevron.classList.toggle("collapsed", state.sidebarCollapsed.topics);
 }
 
-const SYSTEM_FILTERS = {
-  node:    { key: "hideSystemNodes",    fn: isSystemNode },
-  service: { key: "hideSystemServices", fn: isSystemService },
-};
-
-function renderList(containerId, items, kind) {
-  const container = document.getElementById(containerId);
+function renderTopicList() {
+  const container = document.getElementById("topics-list");
   container.innerHTML = "";
 
   let filtered = state.filter
-    ? items.filter(n => n.toLowerCase().includes(state.filter.toLowerCase()))
-    : items;
-
-  const sf = SYSTEM_FILTERS[kind];
-  if (sf && state[sf.key]) {
-    filtered = filtered.filter(n => !sf.fn(n));
-  }
+    ? state.seenTopics.filter(t => t.toLowerCase().includes(state.filter.toLowerCase()))
+    : state.seenTopics;
 
   if (!filtered.length) {
     if (!state.connected) return;
     const el = document.createElement("div");
     el.className = "sidebar-empty";
-    el.textContent = state.filter ? "No matches" : "None found";
+    el.textContent = state.filter ? "No matches" : "Waiting for messages…";
     container.appendChild(el);
     return;
   }
 
-  for (const name of filtered) {
-    const isActive = state.selected?.kind === kind && state.selected?.name === name;
+  for (const topic of filtered) {
+    const isActive = state.selected?.name === topic;
     const btn = document.createElement("button");
     btn.className = "sidebar-item" + (isActive ? " active" : "");
-    btn.textContent = name;
-    btn.title = name;
-    btn.addEventListener("click", () => selectEntity(kind, name));
+    btn.textContent = topic;
+    btn.title = topic;
+    btn.addEventListener("click", () => selectTopic(topic));
 
-    if (kind === "topic") {
-      const row = document.createElement("div");
-      row.className = "sidebar-item-row";
+    const row = document.createElement("div");
+    row.className = "sidebar-item-row";
 
-      const pinBtn = document.createElement("button");
-      const isPinned = !!state.pinnedTopics[name];
-      pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
-      pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
-      pinBtn.setAttribute("aria-pressed", String(isPinned));
-      pinBtn.textContent = "⊕";
-      pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(name); });
+    const pinBtn = document.createElement("button");
+    const isPinned = !!state.pinnedTopics[topic];
+    pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
+    pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
+    pinBtn.setAttribute("aria-pressed", String(isPinned));
+    pinBtn.textContent = "⊕";
+    pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(topic); });
 
-      row.appendChild(btn);
-      row.appendChild(pinBtn);
-      container.appendChild(row);
-    } else {
-      container.appendChild(btn);
-    }
+    row.appendChild(btn);
+    row.appendChild(pinBtn);
+    container.appendChild(row);
   }
 }
 
-// ── Entity selection ──────────────────────────────────────────────────────────
+// ── Topic selection ───────────────────────────────────────────────────────────
 
-const PANEL_RENDERERS = {
-  topic: renderTopicPanel,
-  node: renderNodePanel,
-  service: renderServicePanel,
-};
-
-function selectEntity(kind, name) {
+function selectTopic(topic) {
   stopWatching();
   stopContinuousPublish();
-  state.selected = { kind, name };
+  state.selected = { kind: "topic", name: topic };
   renderSidebar();
-  PANEL_RENDERERS[kind]?.(name);
+  renderTopicPanel(topic);
 }
 
 // ── Topic panel ────────────────────────────────────────────────────────────────
 
 function renderTopicPanel(topic) {
-  const msgType = state.topicTypes[topic] || "unknown";
   const main = document.getElementById("main-panel");
 
   main.innerHTML = `
     <div class="detail-header">
       <div class="detail-title">${escHtml(topic)}</div>
-      <div class="detail-type">${escHtml(msgType)}</div>
+      <div class="detail-type">MQTT topic</div>
     </div>
 
     <div>
@@ -349,8 +303,8 @@ function renderTopicPanel(topic) {
     </div>
 
     <div class="input-group">
-      <label class="input-label" for="publish-msg">Message (JSON) <span style="color:var(--text-muted);font-weight:400">— ⌘↵ to send</span></label>
-      <textarea class="textarea-field" id="publish-msg" rows="3" placeholder='{}'></textarea>
+      <label class="input-label" for="publish-msg">Payload <span style="color:var(--text-muted);font-weight:400">— ⌘↵ to send</span></label>
+      <textarea class="textarea-field" id="publish-msg" rows="3" placeholder='true'></textarea>
     </div>
 
     <div class="controls-row">
@@ -368,25 +322,19 @@ function renderTopicPanel(topic) {
   `;
 
   document.getElementById("btn-subscribe-once").addEventListener("click", () =>
-    doSubscribeOnce(topic, msgType)
+    doSubscribeOnce(topic)
   );
-  document.getElementById("btn-watch").addEventListener("click", () =>
-    startWatching(topic, msgType)
-  );
+  document.getElementById("btn-watch").addEventListener("click", () => startWatching(topic));
   document.getElementById("btn-stop-watch").addEventListener("click", stopWatching);
-  document.getElementById("btn-publish").addEventListener("click", () =>
-    doPublish(topic, msgType)
-  );
+  document.getElementById("btn-publish").addEventListener("click", () => doPublish(topic));
 
-  // Cmd/Ctrl+Enter to publish
   document.getElementById("publish-msg").addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
-      doPublish(topic, msgType);
+      doPublish(topic);
     }
   });
 
-  // History select
   document.getElementById("publish-history").addEventListener("change", (e) => {
     if (e.target.value) {
       document.getElementById("publish-msg").value = e.target.value;
@@ -395,11 +343,10 @@ function renderTopicPanel(topic) {
   });
   renderPublishHistory(topic);
 
-  // Continuous publish
   document.getElementById("repeat-checkbox").addEventListener("change", (e) => {
     if (e.target.checked) {
       const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
-      startContinuousPublish(topic, msgType, hz);
+      startContinuousPublish(topic, hz);
     } else {
       stopContinuousPublish();
     }
@@ -407,7 +354,7 @@ function renderTopicPanel(topic) {
   document.getElementById("repeat-hz").addEventListener("change", () => {
     if (document.getElementById("repeat-checkbox")?.checked) {
       const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
-      startContinuousPublish(topic, msgType, hz);
+      startContinuousPublish(topic, hz);
     }
   });
 
@@ -416,12 +363,12 @@ function renderTopicPanel(topic) {
 
 // ── Publish history ───────────────────────────────────────────────────────────
 
-function pushPublishHistory(topic, jsonStr) {
+function pushPublishHistory(topic, payload) {
   if (!state.publishHistory[topic]) state.publishHistory[topic] = [];
   const hist = state.publishHistory[topic];
-  const existing = hist.indexOf(jsonStr);
+  const existing = hist.indexOf(payload);
   if (existing !== -1) hist.splice(existing, 1);
-  hist.unshift(jsonStr);
+  hist.unshift(payload);
   if (hist.length > 10) hist.pop();
 }
 
@@ -443,33 +390,19 @@ function renderPublishHistory(topic) {
 
 // ── Continuous publish ────────────────────────────────────────────────────────
 
-function startContinuousPublish(topic, msgType, hz) {
+function startContinuousPublish(topic, hz) {
   stopContinuousPublish();
-  let lastValidMsg = {};
-  try {
-    lastValidMsg = JSON.parse(document.getElementById("publish-msg")?.value || "{}");
-  } catch {
-    toast("Invalid JSON for continuous publish", "error");
-    const cb = document.getElementById("repeat-checkbox");
-    if (cb) cb.checked = false;
-    return;
-  }
-  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
-  rosTopic.advertise();
   const interval = Math.max(50, Math.round(1000 / hz));
   const timer = setInterval(() => {
-    try {
-      lastValidMsg = JSON.parse(document.getElementById("publish-msg")?.value || "{}");
-    } catch { /* keep last valid */ }
-    rosTopic.publish(new ROSLIB.Message(lastValidMsg));
+    const payload = document.getElementById("publish-msg")?.value || "";
+    state.mqttClient?.publish(topic, payload);
   }, interval);
-  state.continuousPublish = { timer, rosTopic };
+  state.continuousPublish = { timer };
 }
 
 function stopContinuousPublish() {
   if (!state.continuousPublish) return;
   clearInterval(state.continuousPublish.timer);
-  state.continuousPublish.rosTopic.unadvertise();
   state.continuousPublish = null;
   const cb = document.getElementById("repeat-checkbox");
   if (cb) cb.checked = false;
@@ -477,12 +410,12 @@ function stopContinuousPublish() {
 
 // ── Subscribe / watch ─────────────────────────────────────────────────────────
 
-async function doSubscribeOnce(topic, msgType) {
+async function doSubscribeOnce(topic) {
   const btn = document.getElementById("btn-subscribe-once");
   btn.disabled = true;
   btn.textContent = "Waiting…";
   try {
-    const msg = await subscribeOnce(topic, msgType, 5000);
+    const msg = await subscribeOnce(topic, 5000);
     showMsgCard(msg);
     toast("Message received", "ok");
   } catch (err) {
@@ -501,20 +434,15 @@ function setWatchUI(watching) {
   if (indicator) indicator.style.display = watching ? "" : "none";
 }
 
-function startWatching(topic, msgType) {
+function startWatching(topic) {
   stopWatching();
-  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
-  rosTopic.subscribe(msg => showMsgCard(msg));
-  state.watching = rosTopic;
+  state.watching = topic;
   setWatchUI(true);
 }
 
 function stopWatching() {
   stopContinuousPublish();
-  if (state.watching) {
-    state.watching.unsubscribe();
-    state.watching = null;
-  }
+  state.watching = null;
   setWatchUI(false);
 }
 
@@ -522,26 +450,23 @@ function showMsgCard(msg) {
   const card = document.getElementById("last-msg");
   if (!card) return;
   card.className = "data-card";
-  card.textContent = JSON.stringify(msg, null, 2);
+  try {
+    card.textContent = JSON.stringify(JSON.parse(msg), null, 2);
+  } catch {
+    card.textContent = msg;
+  }
 }
 
-async function doPublish(topic, msgType) {
+async function doPublish(topic) {
   const textarea = document.getElementById("publish-msg");
-  let msg;
-  try {
-    msg = JSON.parse(textarea.value || "{}");
-  } catch {
-    toast("Invalid JSON", "error");
+  const payload = textarea.value;
+  if (!payload) {
+    toast("Enter a payload to publish", "error");
     return;
   }
-  pushPublishHistory(topic, JSON.stringify(msg, null, 2));
+  pushPublishHistory(topic, payload);
   renderPublishHistory(topic);
-
-  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
-  rosTopic.advertise();
-  rosTopic.publish(new ROSLIB.Message(msg));
-  await sleep(100);
-  rosTopic.unadvertise();
+  state.mqttClient.publish(topic, payload);
   toast("Published", "ok");
 }
 
@@ -553,39 +478,20 @@ function togglePin(topic) {
 }
 
 function pinTopic(topic) {
-  if (state.pinnedTopics[topic] || !state.ros || !state.connected) return;
-  const msgType = state.topicTypes[topic] || "";
-  const sub = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
-  const entry = { msgType, sub, lastMsg: null, trail: [] };
-  state.pinnedTopics[topic] = entry;
-
-  sub.subscribe(msg => {
-    entry.lastMsg = msg;
-    const pos = extractPosition(msg);
-    if (pos) {
-      entry.trail.push(pos);
-      if (entry.trail.length > 100) entry.trail.shift();
-    }
-    updateWatchCard(topic);
-  });
-
+  if (state.pinnedTopics[topic] || !state.connected) return;
+  state.pinnedTopics[topic] = { lastMsg: null };
   renderPinnedRow();
   renderSidebar();
 }
 
 function unpinTopic(topic) {
-  const entry = state.pinnedTopics[topic];
-  if (!entry) return;
-  entry.sub.unsubscribe();
+  if (!state.pinnedTopics[topic]) return;
   delete state.pinnedTopics[topic];
   renderPinnedRow();
   renderSidebar();
 }
 
 function unpinAllTopics() {
-  for (const entry of Object.values(state.pinnedTopics)) {
-    entry.sub.unsubscribe();
-  }
   state.pinnedTopics = {};
   renderPinnedRow();
 }
@@ -597,17 +503,9 @@ function renderPinnedRow() {
   row.innerHTML = "";
 
   for (const [topic, entry] of pinned) {
-    const isPose = isPoseTopic(entry.msgType);
     const id = cssId(topic);
     const safe = escHtml(topic);
-
-    let bodyHtml;
-    if (isPose) {
-      bodyHtml = `<canvas class="pose-canvas" id="pose-canvas-${id}" width="180" height="160" aria-label="Pose visualization for ${safe}"></canvas>`;
-    } else {
-      const msg = entry.lastMsg ? escHtml(JSON.stringify(entry.lastMsg, null, 2)) : "Waiting…";
-      bodyHtml = `<div class="watch-card-msg" id="watch-msg-${id}">${msg}</div>`;
-    }
+    const msg = entry.lastMsg !== null ? escHtml(entry.lastMsg) : "Waiting…";
 
     const card = document.createElement("div");
     card.className = "watch-card";
@@ -617,349 +515,80 @@ function renderPinnedRow() {
         <span class="watch-card-name" title="${safe}">${safe}</span>
         <button class="watch-card-unpin" aria-label="Unpin ${safe}">✕</button>
       </div>
-      ${bodyHtml}
+      <div class="watch-card-msg" id="watch-msg-${id}">${msg}</div>
     `;
-
     card.querySelector(".watch-card-unpin").addEventListener("click", () => unpinTopic(topic));
     row.appendChild(card);
-
-    if (isPose && entry.lastMsg) renderPoseCanvas(topic);
   }
 }
 
 function updateWatchCard(topic) {
   const entry = state.pinnedTopics[topic];
   if (!entry) return;
-  if (isPoseTopic(entry.msgType)) {
-    renderPoseCanvas(topic);
-  } else {
-    const el = document.getElementById(`watch-msg-${cssId(topic)}`);
-    if (el && entry.lastMsg) el.textContent = JSON.stringify(entry.lastMsg, null, 2);
-  }
-}
-
-function isPoseTopic(msgType) {
-  return msgType.toLowerCase().includes("pose");
-}
-
-// ── Pose visualizer ───────────────────────────────────────────────────────────
-
-function extractPosition(msg) {
-  if (msg.pose?.pose?.position) {
-    return { x: msg.pose.pose.position.x, y: msg.pose.pose.position.y, theta: yawFromQuaternion(msg.pose.pose.orientation) };
-  }
-  if (msg.pose?.position) {
-    return { x: msg.pose.position.x, y: msg.pose.position.y, theta: yawFromQuaternion(msg.pose.orientation) };
-  }
-  if (msg.position) {
-    return { x: msg.position.x, y: msg.position.y, theta: yawFromQuaternion(msg.orientation) };
-  }
-  if (typeof msg.x === "number" && typeof msg.y === "number") {
-    return { x: msg.x, y: msg.y, theta: msg.theta ?? 0 };
-  }
-  return null;
-}
-
-function yawFromQuaternion(q) {
-  if (!q) return 0;
-  const siny = 2 * (q.w * q.z + q.x * q.y);
-  const cosy = 1 - 2 * (q.y * q.y + q.z * q.z);
-  return Math.atan2(siny, cosy);
-}
-
-function renderPoseCanvas(topic) {
-  const entry = state.pinnedTopics[topic];
-  if (!entry) return;
-  const canvas = document.getElementById(`pose-canvas-${cssId(topic)}`);
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
-
-  const s = getComputedStyle(document.documentElement);
-  const cBorder  = s.getPropertyValue("--border").trim();
-  const cAccent  = s.getPropertyValue("--accent").trim();
-  const cMuted   = s.getPropertyValue("--text-muted").trim();
-  const cDanger  = s.getPropertyValue("--danger").trim();
-  const cSurface = s.getPropertyValue("--surface").trim();
-
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = cSurface;
-  ctx.fillRect(0, 0, W, H);
-
-  const pos = extractPosition(entry.lastMsg);
-  const allPts = pos ? [...entry.trail, pos] : entry.trail;
-  if (!allPts.length) return;
-
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of allPts) {
-    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
-  }
-
-  const pad = Math.max(maxX - minX, maxY - minY, 0.5) * 0.2;
-  const wx0 = minX - pad, wx1 = maxX + pad;
-  const wy0 = minY - pad, wy1 = maxY + pad;
-
-  const toC = (wx, wy) => ({
-    x: ((wx - wx0) / (wx1 - wx0)) * W,
-    y: H - ((wy - wy0) / (wy1 - wy0)) * H,
-  });
-
-  // Grid
-  ctx.strokeStyle = cBorder;
-  ctx.lineWidth = 0.5;
-  for (let i = 0; i <= 5; i++) {
-    const f = i / 5;
-    const cx = toC(wx0 + (wx1 - wx0) * f, wy0).x;
-    const cy = toC(wx0, wy0 + (wy1 - wy0) * f).y;
-    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
-  }
-
-  // Trail
-  if (entry.trail.length > 1) {
-    for (let i = 1; i < entry.trail.length; i++) {
-      ctx.globalAlpha = 0.3 + 0.7 * (i / entry.trail.length);
-      ctx.strokeStyle = cMuted;
-      ctx.lineWidth = 1.5;
-      const a = toC(entry.trail[i - 1].x, entry.trail[i - 1].y);
-      const b = toC(entry.trail[i].x, entry.trail[i].y);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  // Current position
-  if (pos) {
-    const cp = toC(pos.x, pos.y);
-    const theta = pos.theta ?? 0;
-    const arrowLen = 14;
-    const headLen = 5;
-    const headAngle = 0.45;
-
-    ctx.strokeStyle = cAccent;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cp.x, cp.y);
-    ctx.lineTo(cp.x + Math.cos(theta) * arrowLen, cp.y - Math.sin(theta) * arrowLen);
-    ctx.stroke();
-
-    const tipX = cp.x + Math.cos(theta) * arrowLen;
-    const tipY = cp.y - Math.sin(theta) * arrowLen;
-    ctx.beginPath();
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(cp.x + Math.cos(theta - headAngle) * (arrowLen - headLen), cp.y - Math.sin(theta - headAngle) * (arrowLen - headLen));
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(cp.x + Math.cos(theta + headAngle) * (arrowLen - headLen), cp.y - Math.sin(theta + headAngle) * (arrowLen - headLen));
-    ctx.stroke();
-
-    ctx.fillStyle = cDanger;
-    ctx.beginPath();
-    ctx.arc(cp.x, cp.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-// ── Node panel ────────────────────────────────────────────────────────────────
-
-async function renderNodePanel(node) {
-  const main = document.getElementById("main-panel");
-  main.innerHTML = `
-    <div class="detail-header">
-      <div class="detail-title">${escHtml(node)}</div>
-      <div class="detail-type">Node</div>
-    </div>
-    <div class="section-label">Loading details…</div>
-  `;
-
-  try {
-    const res = await callRosapi("/rosapi/node_details", "rosapi/NodeDetails", { node });
-    const { publishing = [], subscribing = [], services = [] } = res;
-    main.innerHTML = `
-      <div class="detail-header">
-        <div class="detail-title">${escHtml(node)}</div>
-        <div class="detail-type">Node</div>
-      </div>
-      <div>
-        <div class="section-label">Publishes</div>
-        ${chipList(publishing)}
-      </div>
-      <div>
-        <div class="section-label">Subscribes</div>
-        ${chipList(subscribing)}
-      </div>
-      <div>
-        <div class="section-label">Services</div>
-        ${chipList(services)}
-      </div>
-    `;
-  } catch (err) {
-    main.innerHTML += `<div class="banner banner-error">Failed to load node details: ${escHtml(String(err))}</div>`;
-  }
-}
-
-// ── Service panel ──────────────────────────────────────────────────────────────
-
-async function renderServicePanel(service) {
-  const main = document.getElementById("main-panel");
-  main.innerHTML = `
-    <div class="detail-header">
-      <div class="detail-title">${escHtml(service)}</div>
-      <div class="detail-type">Service</div>
-    </div>
-    <div class="section-label">Loading type…</div>
-  `;
-
-  let svcType = "unknown";
-  try {
-    const res = await callRosapi("/rosapi/service_type", "rosapi/ServiceType", { service });
-    svcType = res.type || "unknown";
-  } catch { /* leave as unknown */ }
-
-  main.innerHTML = `
-    <div class="detail-header">
-      <div class="detail-title">${escHtml(service)}</div>
-      <div class="detail-type">${escHtml(svcType)}</div>
-    </div>
-
-    <div class="divider-label">Call service</div>
-
-    <div class="input-group">
-      <label class="input-label" for="svc-type-input">Service type</label>
-      <input class="input-field" id="svc-type-input" type="text" value="${escHtml(svcType)}" spellcheck="false">
-    </div>
-    <div class="input-group">
-      <label class="input-label" for="svc-request">Request (JSON)</label>
-      <textarea class="textarea-field" id="svc-request" rows="4" placeholder='{}'></textarea>
-    </div>
-    <div class="controls-row">
-      <button class="btn btn-primary btn-sm" id="btn-call-svc">Call</button>
-    </div>
-
-    <div id="svc-response-section" style="display:none">
-      <div class="section-label">Response</div>
-      <div class="data-card" id="svc-response"></div>
-    </div>
-  `;
-
-  attachJsonFormatter("svc-request");
-
-  document.getElementById("btn-call-svc").addEventListener("click", async () => {
-    const type = document.getElementById("svc-type-input").value.trim();
-    let req;
+  const el = document.getElementById(`watch-msg-${cssId(topic)}`);
+  if (el && entry.lastMsg !== null) {
     try {
-      req = JSON.parse(document.getElementById("svc-request").value || "{}");
+      el.textContent = JSON.stringify(JSON.parse(entry.lastMsg), null, 2);
     } catch {
-      toast("Invalid JSON", "error");
-      return;
+      el.textContent = entry.lastMsg;
     }
-    const btn = document.getElementById("btn-call-svc");
-    btn.disabled = true; btn.textContent = "Calling…";
-    try {
-      const result = await callRosapi(service, type, req);
-      const section = document.getElementById("svc-response-section");
-      const card = document.getElementById("svc-response");
-      section.style.display = "";
-      card.textContent = JSON.stringify(result, null, 2);
-      toast("Service called", "ok");
-    } catch (err) {
-      toast(`Service error: ${err}`, "error");
-    } finally {
-      btn.disabled = false; btn.textContent = "Call";
-    }
-  });
+  }
 }
 
-// ── Core ROS tool implementations ─────────────────────────────────────────────
+// ── Core MQTT tool implementations ────────────────────────────────────────────
 
-function subscribeOnce(topic, msgType, timeoutMs = 5000) {
+function subscribeOnce(topic, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
-    if (!state.ros || !state.connected) { reject(new Error("Not connected")); return; }
-    const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+    if (!state.mqttClient || !state.connected) { reject(new Error("Not connected")); return; }
+    let cb;
     const timer = setTimeout(() => {
-      rosTopic.unsubscribe();
+      if (state.onceCallbacks[topic]) {
+        state.onceCallbacks[topic] = state.onceCallbacks[topic].filter(c => c !== cb);
+      }
       reject(new Error(`Timeout waiting for message on ${topic}`));
     }, timeoutMs);
-    rosTopic.subscribe(msg => {
-      clearTimeout(timer);
-      rosTopic.unsubscribe();
-      resolve(msg);
-    });
+    cb = (msg) => { clearTimeout(timer); resolve(msg); };
+    if (!state.onceCallbacks[topic]) state.onceCallbacks[topic] = [];
+    state.onceCallbacks[topic].push(cb);
   });
 }
 
-async function subscribeForDuration(topic, msgType, durationSec, maxMessages = 100) {
-  if (!state.ros || !state.connected) throw new Error("Not connected");
+async function subscribeForDuration(topic, durationSec, maxMessages = 100) {
+  if (!state.mqttClient || !state.connected) throw new Error("Not connected");
   const collected = [];
-  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
-  await new Promise(resolve => {
-    rosTopic.subscribe(msg => {
+  if (!state.topicListeners[topic]) state.topicListeners[topic] = new Set();
+
+  return new Promise(resolve => {
+    const cb = (msg) => {
       collected.push(msg);
-      if (collected.length >= maxMessages) { rosTopic.unsubscribe(); resolve(); }
-    });
-    setTimeout(() => { rosTopic.unsubscribe(); resolve(); }, durationSec * 1000);
+      if (collected.length >= maxMessages) {
+        state.topicListeners[topic]?.delete(cb);
+        resolve(collected);
+      }
+    };
+    state.topicListeners[topic].add(cb);
+    setTimeout(() => {
+      state.topicListeners[topic]?.delete(cb);
+      resolve(collected);
+    }, durationSec * 1000);
   });
-  return collected;
 }
 
-async function publishForDurations(topic, msgType, messages, durations) {
-  if (!state.ros || !state.connected) throw new Error("Not connected");
-  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
-  rosTopic.advertise();
-  for (let i = 0; i < messages.length; i++) {
-    rosTopic.publish(new ROSLIB.Message(messages[i]));
-    await sleep((durations[i] || 0) * 1000);
-  }
-  rosTopic.unadvertise();
-}
-
-async function getTopicDetails(topic) {
-  const [typeRes, pubRes, subRes] = await Promise.all([
-    callRosapi("/rosapi/topic_type", "rosapi/TopicType", { topic }),
-    callRosapi("/rosapi/publishers", "rosapi/Publishers", { topic }),
-    callRosapi("/rosapi/subscribers", "rosapi/Subscribers", { topic }),
-  ]);
-  return {
-    topic,
-    type: typeRes.type,
-    publishers: pubRes.publishers || [],
-    subscribers: subRes.subscribers || [],
-  };
-}
-
-async function getServiceDetails(service) {
-  const [typeRes, nodesRes] = await Promise.all([
-    callRosapi("/rosapi/service_type", "rosapi/ServiceType", { service }),
-    callRosapi("/rosapi/service_node", "rosapi/ServiceNode", { service }).catch(() => ({ node: "" })),
-  ]);
-  return { service, type: typeRes.type, node: nodesRes.node };
-}
-
-async function getNodeDetails(node) {
-  const res = await callRosapi("/rosapi/node_details", "rosapi/NodeDetails", { node });
-  return {
-    node,
-    publishing: res.publishing || [],
-    subscribing: res.subscribing || [],
-    services: res.services || [],
-  };
-}
-
-// ── WebMCP tool registration ───────────────────────────────────────────────────
+// ── Tools ─────────────────────────────────────────────────────────────────────
 
 const TOOLS = [
   {
-    name: "connect_to_robot",
-    description: "Set the rosbridge WebSocket URL and reconnect.",
+    name: "connect_to_broker",
+    description: "Set the MQTT broker WebSocket URL and reconnect.",
     parameters: {
       type: "object",
       properties: {
-        ip:   { type: "string", description: "rosbridge host IP or hostname", default: "127.0.0.1" },
-        port: { type: "number", description: "rosbridge port", default: 9090 },
+        ip:   { type: "string", description: "MQTT broker host IP or hostname", default: "127.0.0.1" },
+        port: { type: "number", description: "MQTT WebSocket port", default: 9001 },
       },
-      required: ["ip", "port"],
+      required: ["ip"],
     },
-    handler: async ({ ip, port }) => {
+    handler: async ({ ip, port = 9001 }) => {
       const url = `ws://${ip}:${port}`;
       document.getElementById("url-input").value = url;
       connect(url);
@@ -968,166 +597,85 @@ const TOOLS = [
   },
   {
     name: "get_topics",
-    description: "List all ROS topics.",
+    description: "List all MQTT topics seen since connecting (via wildcard # subscription).",
     parameters: { type: "object", properties: {} },
-    handler: async () => {
-      await loadTopics();
-      renderSidebar();
-      return { topics: state.topics, types: state.topics.map(t => state.topicTypes[t] || "") };
-    },
-  },
-  {
-    name: "get_topic_type",
-    description: "Get the message type for a ROS topic.",
-    parameters: {
-      type: "object",
-      properties: { topic: { type: "string", description: "Full topic name, e.g. /turtle1/cmd_vel" } },
-      required: ["topic"],
-    },
-    handler: async ({ topic }) => {
-      const res = await callRosapi("/rosapi/topic_type", "rosapi/TopicType", { topic });
-      return { topic, type: res.type };
-    },
-  },
-  {
-    name: "get_topic_details",
-    description: "Get publishers, subscribers, and type for a topic.",
-    parameters: {
-      type: "object",
-      properties: { topic: { type: "string" } },
-      required: ["topic"],
-    },
-    handler: async ({ topic }) => getTopicDetails(topic),
+    handler: async () => ({ topics: state.seenTopics }),
   },
   {
     name: "subscribe_once",
-    description: "Subscribe to a topic and return the first message received.",
+    description: "Wait for the next message on an MQTT topic and return its payload.",
     parameters: {
       type: "object",
       properties: {
-        topic:    { type: "string" },
-        msg_type: { type: "string", description: "ROS message type, e.g. turtlesim/msg/Pose" },
-        timeout:  { type: "number", description: "Timeout in seconds (default 5)", default: 5 },
+        topic:   { type: "string", description: "MQTT topic, e.g. /led/command" },
+        timeout: { type: "number", description: "Timeout in seconds (default 5)", default: 5 },
       },
-      required: ["topic", "msg_type"],
+      required: ["topic"],
     },
-    handler: async ({ topic, msg_type, timeout = 5 }) => {
-      const msg = await subscribeOnce(topic, msg_type, timeout * 1000);
-      if (state.selected?.kind === "topic" && state.selected?.name === topic) showMsgCard(msg);
-      return msg;
+    handler: async ({ topic, timeout = 5 }) => {
+      const msg = await subscribeOnce(topic, timeout * 1000);
+      if (state.selected?.name === topic) showMsgCard(msg);
+      return { topic, payload: msg };
     },
   },
   {
     name: "subscribe_for_duration",
-    description: "Subscribe to a topic and collect messages for a given duration.",
+    description: "Collect all messages on an MQTT topic for a given duration.",
     parameters: {
       type: "object",
       properties: {
         topic:        { type: "string" },
-        msg_type:     { type: "string" },
         duration:     { type: "number", description: "Duration in seconds" },
         max_messages: { type: "number", description: "Stop after this many messages", default: 100 },
       },
-      required: ["topic", "msg_type", "duration"],
+      required: ["topic", "duration"],
     },
-    handler: async ({ topic, msg_type, duration, max_messages = 100 }) =>
-      subscribeForDuration(topic, msg_type, duration, max_messages),
+    handler: async ({ topic, duration, max_messages = 100 }) => {
+      const msgs = await subscribeForDuration(topic, duration, max_messages);
+      return { topic, messages: msgs, count: msgs.length };
+    },
   },
   {
-    name: "publish_once",
-    description: "Publish a single message to a topic.",
+    name: "publish",
+    description: "Publish a message to an MQTT topic.",
     parameters: {
       type: "object",
       properties: {
-        topic:    { type: "string" },
-        msg_type: { type: "string" },
-        msg:      { type: "object", description: "Message payload as JSON object" },
+        topic:   { type: "string", description: "MQTT topic to publish to" },
+        payload: { type: "string", description: "Message payload, e.g. 'true', 'false', or a JSON string" },
       },
-      required: ["topic", "msg_type", "msg"],
+      required: ["topic", "payload"],
     },
-    handler: async ({ topic, msg_type, msg }) => {
-      const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msg_type });
-      rosTopic.advertise();
-      rosTopic.publish(new ROSLIB.Message(msg));
-      await sleep(100);
-      rosTopic.unadvertise();
-      return { published: true, topic, msg };
+    handler: async ({ topic, payload }) => {
+      if (!state.mqttClient || !state.connected) throw new Error("Not connected");
+      state.mqttClient.publish(topic, payload);
+      return { published: true, topic, payload };
     },
   },
   {
-    name: "publish_for_durations",
-    description: "Publish a sequence of messages with delays between each.",
+    name: "publish_sequence",
+    description: "Publish a sequence of messages to a topic with delays between each.",
     parameters: {
       type: "object",
       properties: {
         topic:     { type: "string" },
-        msg_type:  { type: "string" },
-        messages:  { type: "array", items: { type: "object" }, description: "Array of message payloads" },
+        payloads:  { type: "array", items: { type: "string" }, description: "Array of message payloads" },
         durations: { type: "array", items: { type: "number" }, description: "Delay in seconds after each message" },
       },
-      required: ["topic", "msg_type", "messages", "durations"],
+      required: ["topic", "payloads", "durations"],
     },
-    handler: async ({ topic, msg_type, messages, durations }) => {
-      await publishForDurations(topic, msg_type, messages, durations);
-      return { published: messages.length, topic };
+    handler: async ({ topic, payloads, durations }) => {
+      if (!state.mqttClient || !state.connected) throw new Error("Not connected");
+      for (let i = 0; i < payloads.length; i++) {
+        state.mqttClient.publish(topic, payloads[i]);
+        await sleep((durations[i] || 0) * 1000);
+      }
+      return { published: payloads.length, topic };
     },
-  },
-  {
-    name: "get_services",
-    description: "List all available ROS services.",
-    parameters: { type: "object", properties: {} },
-    handler: async () => {
-      await loadServices();
-      renderSidebar();
-      return { services: state.services };
-    },
-  },
-  {
-    name: "get_service_details",
-    description: "Get the request/response type and provider node for a service.",
-    parameters: {
-      type: "object",
-      properties: { service: { type: "string" } },
-      required: ["service"],
-    },
-    handler: async ({ service }) => getServiceDetails(service),
-  },
-  {
-    name: "call_service",
-    description: "Call a ROS service with a request payload.",
-    parameters: {
-      type: "object",
-      properties: {
-        service_name: { type: "string" },
-        service_type: { type: "string" },
-        request:      { type: "object", description: "Request payload as JSON object" },
-      },
-      required: ["service_name", "service_type", "request"],
-    },
-    handler: async ({ service_name, service_type, request }) =>
-      callRosapi(service_name, service_type, request),
-  },
-  {
-    name: "get_nodes",
-    description: "List all running ROS nodes.",
-    parameters: { type: "object", properties: {} },
-    handler: async () => {
-      await loadNodes();
-      renderSidebar();
-      return { nodes: state.nodes };
-    },
-  },
-  {
-    name: "get_node_details",
-    description: "Get publishers, subscribers, and services for a node.",
-    parameters: {
-      type: "object",
-      properties: { node: { type: "string" } },
-      required: ["node"],
-    },
-    handler: async ({ node }) => getNodeDetails(node),
   },
 ];
+
+// ── WebMCP tool registration ───────────────────────────────────────────────────
 
 let _webmcpActive = false;
 
@@ -1231,31 +779,6 @@ async function replayToolCall(entry) {
   }
 }
 
-// ── UI helpers ─────────────────────────────────────────────────────────────────
-
-function attachJsonFormatter(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.addEventListener("blur", () => {
-    const val = el.value.trim();
-    if (!val) return;
-    try { el.value = JSON.stringify(JSON.parse(val), null, 2); } catch { /* leave as-is */ }
-  });
-}
-
-function escHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function chipList(items) {
-  if (!items.length) return `<div class="sidebar-empty" style="padding:0">None</div>`;
-  return `<div class="list-chips">${items.map(i => `<span class="chip">${escHtml(i)}</span>`).join("")}</div>`;
-}
-
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
 function clearChatHistory() {
@@ -1270,9 +793,9 @@ const OAUTH_CALLBACK_ORIGIN = "https://neevs.io";
 const chatState = {
   provider: "anthropic",
   model: "claude-sonnet-4-6",
-  claudeKey: localStorage.getItem("webmcp-claude-key") || "",
-  githubAuth: JSON.parse(localStorage.getItem("webmcp-gh-auth") || "null"), // {token, username}
-  convMsgs: [],  // raw API message history (provider-specific format)
+  claudeKey: (window.DASHBOARD_CONFIG?.anthropicApiKey) || localStorage.getItem("webmcp-claude-key") || "",
+  githubAuth: JSON.parse(localStorage.getItem("webmcp-gh-auth") || "null"),
+  convMsgs: [],
   abortCtrl: null,
   busy: false,
 };
@@ -1312,12 +835,6 @@ function initChat() {
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement?.isContentEditable) return;
     const chatInput = document.getElementById("chat-input");
     if (chatInput && !chatInput.disabled) chatInput.focus();
-  });
-
-  document.getElementById("robot-view-btn").addEventListener("click", () => {
-    const wsUrl = document.getElementById("url-input").value.trim();
-    const { hostname } = new URL(wsUrl.replace(/^wss?/, "http"));
-    window.open(`http://${hostname}:8080/vnc.html`, "_blank", "noopener");
   });
 
   document.getElementById("chat-panel-toggle").addEventListener("click", () => {
@@ -1444,19 +961,18 @@ function updateGitHubAuthBar() {
 
 function getSystemPrompt() {
   const lines = [
-    "You are an AI assistant embedded in the ROS WebMCP Dashboard.",
-    "You have access to ROS tools to inspect and control a robot via rosbridge.",
+    "You are an AI assistant embedded in the MQTT AI Dashboard.",
+    "You have access to MQTT tools to inspect and control a robot via an MQTT broker.",
   ];
   if (state.connected) {
-    lines.push(`Connected to rosbridge at ${state.url}.`);
-    lines.push(`Topics (${state.topics.length}): ${state.topics.slice(0, 20).join(", ")}${state.topics.length > 20 ? "…" : ""}`);
-    if (state.nodes.length) lines.push(`Nodes: ${state.nodes.slice(0, 10).join(", ")}`);
-    if (state.services.length) lines.push(`Services: ${state.services.slice(0, 10).join(", ")}`);
+    lines.push(`Connected to MQTT broker at ${state.url}.`);
+    lines.push(`Known topics (${state.seenTopics.length}): ${state.seenTopics.slice(0, 20).join(", ")}${state.seenTopics.length > 20 ? "…" : ""}`);
   } else {
-    lines.push("The robot is not currently connected. Use connect_to_robot to connect first.");
+    lines.push("The broker is not currently connected. Use connect_to_broker to connect first.");
   }
-  if (state.selected) lines.push(`User is currently viewing ${state.selected.kind} "${state.selected.name}".`);
-  lines.push("Use the provided tools to answer questions. Be concise.");
+  if (state.selected) lines.push(`User is currently viewing topic "${state.selected.name}".`);
+  lines.push("Publish payloads as plain strings (e.g. 'true', 'false', '42') or JSON strings.");
+  lines.push("Use the provided tools to answer questions and control the robot. Be concise.");
   return lines.join("\n");
 }
 
@@ -1855,7 +1371,7 @@ function updateChatToolCall(toolId, result, params) {
     status.className = `chat-tool-call-status ${isError ? "error" : "ok"}`;
   }
   if (subtitle && params) {
-    const key = params.topic || params.service || params.service_name || params.node || params.url || "";
+    const key = params.topic || params.url || "";
     if (key) subtitle.textContent = key;
   }
   if (body) body.textContent = JSON.stringify(result, null, 2);
@@ -1876,7 +1392,6 @@ function hideChatSpinner() {
   document.getElementById("chat-spinner")?.remove();
 }
 
-/** Hide spinner and show error message (silently ignores AbortError). */
 function handleStreamError(err, prefix = "") {
   hideChatSpinner();
   if (err.name !== "AbortError") {
@@ -1912,27 +1427,27 @@ document.getElementById("sidebar-filter").addEventListener("input", (e) => {
   renderSidebar();
 });
 
+document.getElementById("topic-add-input").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const topic = e.target.value.trim();
+  if (!topic) return;
+  if (!state.seenTopics.includes(topic)) {
+    state.seenTopics.push(topic);
+    renderSidebar();
+  }
+  selectTopic(topic);
+  e.target.value = "";
+});
+
 for (const btn of document.querySelectorAll("[data-section]")) {
   btn.addEventListener("click", () => {
     const section = btn.dataset.section;
-    state.sidebarCollapsed[section] = !state.sidebarCollapsed[section];
-    renderSidebar();
+    if (section in state.sidebarCollapsed) {
+      state.sidebarCollapsed[section] = !state.sidebarCollapsed[section];
+      renderSidebar();
+    }
   });
 }
-
-function initSysFilterBtn(btnId, stateKey) {
-  const btn = document.getElementById(btnId);
-  btn.addEventListener("click", () => {
-    state[stateKey] = !state[stateKey];
-    btn.setAttribute("aria-pressed", String(state[stateKey]));
-    btn.classList.toggle("active", state[stateKey]);
-    renderSidebar();
-    if (!state.selected) renderMainPlaceholder();
-  });
-}
-
-initSysFilterBtn("sys-filter-btn", "hideSystemServices");
-initSysFilterBtn("node-sys-filter-btn", "hideSystemNodes");
 
 document.getElementById("github-notice-dismiss").addEventListener("click", () => {
   localStorage.setItem("webmcp-github-notice-dismissed", "1");
@@ -1967,7 +1482,6 @@ document.getElementById("webmcp-badge").addEventListener("click", () => {
 
   popover.innerHTML = "";
 
-  // Header section
   const header = document.createElement("div");
   header.className = "webmcp-popover-header";
   if (_webmcpActive) {
@@ -1978,12 +1492,11 @@ document.getElementById("webmcp-badge").addEventListener("click", () => {
   } else {
     header.innerHTML = `
       <div class="webmcp-popover-title">WebMCP · inactive</div>
-      <div class="webmcp-popover-explain">The <strong>AI chat panel</strong> on this page already uses these ${TOOLS.length} tools directly via the Anthropic/GitHub API — no flag needed. WebMCP would <em>also</em> expose them to native browser AI agents (e.g. a Claude browser integration) without the chat panel. Requires Chrome 146+ Canary → <code>chrome://flags/#webmcp-for-testing</code>.</div>
+      <div class="webmcp-popover-explain">The <strong>AI chat panel</strong> on this page already uses these ${TOOLS.length} tools directly via the Anthropic/GitHub API — no flag needed. WebMCP would <em>also</em> expose them to native browser AI agents. Requires Chrome 146+ Canary → <code>chrome://flags/#webmcp-for-testing</code>.</div>
     `;
   }
   popover.appendChild(header);
 
-  // Tool list
   const divider = document.createElement("div");
   divider.className = "webmcp-popover-divider";
   divider.textContent = "Tools";
