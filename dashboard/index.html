@@ -65,6 +65,15 @@
       <div class="settings-popover" id="settings-popover" hidden role="dialog" aria-label="Settings">
 
         <div class="settings-section">
+          <div class="settings-section-label">Topic Prefix</div>
+          <div class="settings-auth-row">
+            <input type="text" class="chat-auth-input" id="topic-prefix-input" placeholder="e.g. project/" autocomplete="off" spellcheck="false" aria-label="Topic namespace prefix">
+            <button type="button" class="btn btn-sm" id="topic-prefix-save">Save</button>
+          </div>
+          <div class="settings-hint">Subscribes to <code>{prefix}#</code> and <code>devices/{prefix}#</code>. Devices announce on <code>devices/{prefix}{id}</code> with <code>{"topics":["…"]}</code>.</div>
+        </div>
+
+        <div class="settings-section">
           <div class="settings-section-label">Appearance</div>
           <div class="theme-toggle" role="group" aria-label="Color theme">
             <button class="theme-opt" data-theme="system">System</button>

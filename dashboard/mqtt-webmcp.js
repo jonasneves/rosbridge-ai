@@ -10,6 +10,7 @@ const state = {
   connecting: false,
   manualDisconnect: false,
   url: localStorage.getItem("webmcp-broker-url") || DEFAULT_BROKER_URL,
+  topicPrefix: localStorage.getItem("webmcp-topic-prefix") || "",
   seenTopics: [],           // topics seen via '#' subscription
   watching: null,           // topic name currently being live-watched
   topicListeners: {},       // topic -> Set<callback> for persistent listeners
@@ -154,8 +155,9 @@ function connect(url) {
     updateStatusDot(true, false);
     document.getElementById("status-text").textContent = parseHostname(url);
     document.getElementById("connect-btn").textContent = "Disconnect";
-    client.subscribe("#");         // passively discover all active topics
-    client.subscribe("devices/#"); // device announcements (retained, replayed immediately)
+    const prefix = state.topicPrefix;
+    client.subscribe(prefix + "#");              // passively discover all active topics under prefix
+    client.subscribe("devices/" + prefix + "#"); // device announcements (retained, replayed immediately)
     renderSidebar();
     renderMainPlaceholder();
   });
@@ -1792,8 +1794,22 @@ document.getElementById("log-toggle").addEventListener("click", () => {
   }
 });
 
+function initTopicPrefix() {
+  const input = document.getElementById("topic-prefix-input");
+  input.value = state.topicPrefix;
+  document.getElementById("topic-prefix-save").addEventListener("click", () => {
+    let val = input.value.trim();
+    if (val && !val.endsWith("/")) val += "/";
+    input.value = val;
+    state.topicPrefix = val;
+    localStorage.setItem("webmcp-topic-prefix", val);
+    toast("Prefix saved — reconnect to apply", "ok");
+  });
+}
+
 registerWebMCPTools();
 initChat();
+initTopicPrefix();
 
 // ── WebMCP badge popover ───────────────────────────────────────────────────────
 

@@ -318,6 +318,20 @@ body {
   gap: 6px;
 }
 
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.settings-hint code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--surface-raised);
+  border-radius: 2px;
+  padding: 1px 3px;
+}
+
 /* ── Theme segmented control ── */
 
 .theme-toggle {

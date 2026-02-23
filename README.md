@@ -1,10 +1,10 @@
 # MQTT AI Dashboard
 
-Browser dashboard for controlling physical robots with AI. The AI chat calls Claude directly from the browser — no backend, no MCP server, no Python.
+Browser dashboard for controlling physical robots with AI. The AI chat runs entirely in the browser — no backend, no MCP server, no Python required.
 
 ## Architecture
 
-The browser runs everything: MQTT.js connects to a broker over WebSocket. Claude is called directly from the browser with MQTT tool definitions, and when Claude responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes to the same broker over TCP.
+The browser runs everything: MQTT.js connects to a broker over WebSocket. The AI model is called directly from the browser with MQTT tool definitions, and when it responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes to the same broker over TCP.
 
 By default both sides connect to a public cloud broker — no Docker or local setup needed.
 
@@ -13,7 +13,10 @@ By default both sides connect to a public cloud broker — no Docker or local se
 ## Prerequisites
 
 - [Homebrew](https://brew.sh/) — to install host dependencies
-- Anthropic API key — for the AI chat
+- One of the following for the AI chat:
+  - Anthropic API key — entered in the dashboard settings
+  - GitHub account — sign in via GitHub Models (no API key needed)
+  - Claude Code subscription — run `make proxy` to use your personal account
 
 ## Quickstart
 
@@ -27,7 +30,7 @@ After install, macOS will prompt you to allow the CP210x driver in **System Pref
 ```bash
 cp config.mk.example config.mk
 ```
-Edit `config.mk` with your WiFi SSID and password.
+Edit `config.mk` with your WiFi SSID and password. `PORT` and `MQTT_IP` are auto-detected — only override them if needed.
 
 **3. Flash firmware** (first time, via USB)
 ```bash
@@ -41,7 +44,7 @@ Go to [neevs.io/mqtt-ai](https://neevs.io/mqtt-ai) and click **Connect** — it 
 
 **5. Control your robot**
 
-Browse topics and publish manually, or open the AI chat panel, enter your Anthropic API key, and describe what you want the robot to do.
+Browse topics and publish manually, or open the AI chat panel, choose your AI provider, and describe what you want the robot to do.
 
 ## OTA updates
 
@@ -61,25 +64,38 @@ For offline use or private data, run a local Mosquitto broker:
 make mqtt
 ```
 
-Then set in `config.mk`:
+`MQTT_IP` is auto-detected from your local interface (`en0`). Override it in `config.mk` only if your network interface differs:
 ```
-MQTT_IP = <your local IP>
+MQTT_IP = 192.168.1.x
 ```
 
-And connect the dashboard to `ws://<your local IP>:9001` (or `ws://localhost:9001` with `make preview`).
+Then connect the dashboard to `ws://<your local IP>:9001` (or `ws://localhost:9001` with `make preview`).
+
+## Local Claude proxy (optional)
+
+To use the AI chat with your Claude Code subscription instead of an API key:
+
+```bash
+make proxy
+```
+
+This starts a local proxy at `http://127.0.0.1:7337` that forwards dashboard requests to the `claude` CLI. Select **Local (claude cli)** as the model in dashboard settings.
 
 ## Repo structure
 
 ```
-dashboard/   Static web app — AI chat (Claude API) + MQTT topic browser
-docker/      Mosquitto config for local broker (optional)
-firmware/    ESP32 Arduino sketch — LED control via MQTT, OTA support
-Makefile     make setup    — install host dependencies (once per machine)
-             make flash    — compile and upload firmware over USB (first time)
-             make ota      — upload firmware over WiFi (requires ESP32_IP)
-             make monitor  — open serial console
-             make mqtt     — start local Mosquitto broker (optional)
-             make preview  — serve dashboard at http://localhost:8080
+dashboard/       Static web app — AI chat + MQTT topic browser
+docker/          Mosquitto config for local broker (optional)
+firmware/        ESP32 Arduino sketch — LED control via MQTT, OTA support
+local-proxy.js   Node.js proxy — forwards AI chat to the claude CLI (make proxy)
+Makefile         make setup          — install host dependencies (once per machine)
+                 make flash          — compile and upload firmware over USB (first time)
+                 make flash-monitor  — flash then open serial monitor
+                 make ota            — upload firmware over WiFi (requires ESP32_IP)
+                 make monitor        — open serial console
+                 make mqtt           — start local Mosquitto broker (optional)
+                 make preview        — serve dashboard at http://localhost:8080
+                 make proxy          — start local Claude proxy at http://127.0.0.1:7337
 ```
 
 ## Notes
