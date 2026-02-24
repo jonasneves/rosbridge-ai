@@ -994,7 +994,7 @@ function initChat() {
 
   document.getElementById("chat-send").addEventListener("click", sendChatMsg);
   document.getElementById("chat-input").addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendChatMsg();
     }
