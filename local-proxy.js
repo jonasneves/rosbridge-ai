@@ -30,13 +30,13 @@ if (!token) {
 let reqCount = 0;
 setInterval(() => { reqCount = 0; }, 60_000);
 
-function forwardError(apiRes, res, cors) {
-  let errBody = "";
-  apiRes.on("data", c => (errBody += c));
+function forwardErrorResponse(apiRes, res, cors) {
+  let body = "";
+  apiRes.on("data", chunk => (body += chunk));
   apiRes.on("end", () => {
-    console.error("API error body:", errBody);
+    console.error("API error:", body);
     res.writeHead(apiRes.statusCode, cors);
-    res.end(errBody);
+    res.end(body);
   });
 }
 
@@ -66,23 +66,23 @@ createServer((req, res) => {
     return;
   }
 
-  let raw = "";
-  req.on("data", chunk => (raw += chunk));
+  let body = "";
+  req.on("data", chunk => (body += chunk));
   req.on("end", () => {
-    let parsed;
+    let msg;
     try {
-      parsed = JSON.parse(raw);
+      msg = JSON.parse(body);
     } catch {
       res.writeHead(400);
       res.end("Bad JSON");
       return;
     }
 
-    // Ensure a valid model ID -- the local option stores "claude" as a shorthand
-    if (!parsed.model?.startsWith("claude-")) parsed.model = MODEL;
-    const payload = JSON.stringify(parsed);
+    // The dashboard sends "claude" as a shorthand; normalize to a full model ID
+    if (!msg.model?.startsWith("claude-")) msg.model = MODEL;
+    const payload = JSON.stringify(msg);
 
-    console.log(`→ ${payload.length}b  model=${parsed.model}`);
+    console.log(`→ ${payload.length}b  model=${msg.model}`);
 
     const apiReq = httpsRequest({
       hostname: "api.anthropic.com",
@@ -98,7 +98,7 @@ createServer((req, res) => {
     }, apiRes => {
       console.log(`← ${apiRes.statusCode}`);
       if (apiRes.statusCode !== 200) {
-        return forwardError(apiRes, res, cors);
+        return forwardErrorResponse(apiRes, res, cors);
       }
       res.writeHead(200, {
         ...cors,

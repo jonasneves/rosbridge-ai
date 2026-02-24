@@ -75,11 +75,18 @@ Then connect the dashboard to `ws://<your local IP>:9001` (or `ws://localhost:90
 
 To use the AI chat with your Claude Code subscription instead of an API key:
 
+**1. Copy the env template and fill in your OAuth token**
+```bash
+cp .env.example .env
+```
+Set `CLAUDE_CODE_OAUTH_TOKEN` in `.env` to your Claude Code OAuth token.
+
+**2. Start the proxy**
 ```bash
 make proxy
 ```
 
-This starts a local proxy at `http://127.0.0.1:7337` that forwards dashboard requests to the `claude` CLI. Select **Local (claude cli)** as the model in dashboard settings.
+This starts a local proxy at `http://127.0.0.1:7337` that forwards requests directly to `api.anthropic.com` using your OAuth token. Select **Claude · Personal account** as the model in dashboard settings.
 
 ## Repo structure
 
@@ -87,7 +94,8 @@ This starts a local proxy at `http://127.0.0.1:7337` that forwards dashboard req
 dashboard/       Static web app — AI chat + MQTT topic browser
 docker/          Mosquitto config for local broker (optional)
 firmware/        ESP32 Arduino sketch — LED control via MQTT, OTA support
-local-proxy.js   Node.js proxy — forwards AI chat to the claude CLI (make proxy)
+local-proxy.js   Node.js proxy — forwards AI chat to api.anthropic.com via OAuth (make proxy)
+.env.example     Template for CLAUDE_CODE_OAUTH_TOKEN (copy to .env)
 Makefile         make setup          — install host dependencies (once per machine)
                  make flash          — compile and upload firmware over USB (first time)
                  make flash-monitor  — flash then open serial monitor

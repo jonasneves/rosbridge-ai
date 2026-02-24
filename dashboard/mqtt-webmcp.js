@@ -305,7 +305,8 @@ function renderTopicList() {
       flat.push(topic);
     } else {
       const prefix = topic.slice(0, slash);
-      (groups[prefix] || (groups[prefix] = [])).push(topic);
+      if (!groups[prefix]) groups[prefix] = [];
+      groups[prefix].push(topic);
     }
   }
 
@@ -880,6 +881,7 @@ function updateWebMCPBadge(registered) {
 // ── Tool call log ─────────────────────────────────────────────────────────────
 
 function appendToolLog(entry) {
+  entry.id = ++_toolLogId;
   state.toolLog.unshift(entry);
   if (state.toolLog.length > 50) state.toolLog.pop();
 
@@ -1002,8 +1004,8 @@ function initChat() {
     const panel = document.getElementById("chat-panel");
     if (!panel || panel.hidden) return;
     if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-    const tag = document.activeElement?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement?.isContentEditable) return;
+    const active = document.activeElement;
+    if (active?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(active?.tagName)) return;
     const chatInput = document.getElementById("chat-input");
     if (chatInput && !chatInput.disabled) chatInput.focus();
   });
@@ -1022,22 +1024,39 @@ function applyModelSelection(value) {
   const [provider, ...rest] = value.split(":");
   chatState.provider = provider;
   chatState.model = rest.join(":");
-  const showClaudeBar = provider === "anthropic";
-  const showGitHubBar = provider === "github";
-  document.getElementById("chat-claude-bar").style.display = showClaudeBar ? "" : "none";
-  document.getElementById("chat-github-bar").style.display = showGitHubBar ? "" : "none";
-  document.getElementById("github-notice").hidden = !showGitHubBar || !!localStorage.getItem("webmcp-github-notice-dismissed");
-  if (showGitHubBar) updateGitHubAuthBar();
+  document.getElementById("chat-claude-bar").style.display = provider === "anthropic" ? "" : "none";
+  document.getElementById("chat-github-bar").style.display = provider === "github" ? "" : "none";
+  document.getElementById("github-notice").hidden = provider !== "github" || !!localStorage.getItem("webmcp-github-notice-dismissed");
+  if (provider === "github") updateGitHubAuthBar();
+}
+
+async function exchangeGitHubToken(code, redirectUri) {
+  const res = await fetch(`${CORS_PROXY_URL}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, code, redirect_uri: redirectUri }),
+  });
+  const data = await res.json();
+  if (data.error || !data.access_token) {
+    throw new Error(data.error_description || data.error || "Token exchange failed");
+  }
+  let username = data.username;
+  if (!username) {
+    const userRes = await fetch("https://api.github.com/user", {
+      headers: { Authorization: `Bearer ${data.access_token}`, Accept: "application/vnd.github+json" },
+    });
+    if (userRes.ok) username = (await userRes.json()).login;
+  }
+  return { token: data.access_token, username: username || "" };
 }
 
 async function connectGitHub() {
-  const oauthState = crypto.randomUUID();
   const redirectUri = OAUTH_CALLBACK_ORIGIN + "/";
 
   const authUrl = new URL("https://github.com/login/oauth/authorize");
   authUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
   authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("state", oauthState);
+  authUrl.searchParams.set("state", crypto.randomUUID());
   authUrl.searchParams.set("scope", "read:user");
 
   const width = 500, height = 600;
@@ -1060,30 +1079,10 @@ async function connectGitHub() {
       if (type !== "oauth-callback") return;
       window.removeEventListener("message", handleMessage);
       clearInterval(pollTimer);
-      if (error) {
-        reject(new Error(error));
-        return;
-      }
-      if (!code) {
-        reject(new Error("No code received"));
-        return;
-      }
+      if (error) { reject(new Error(error)); return; }
+      if (!code) { reject(new Error("No code received")); return; }
       try {
-        const res = await fetch(`${CORS_PROXY_URL}/token`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, code, redirect_uri: redirectUri }),
-        });
-        const data = await res.json();
-        if (data.error || !data.access_token) throw new Error(data.error_description || data.error || "Token exchange failed");
-        let username = data.username;
-        if (!username) {
-          const userRes = await fetch("https://api.github.com/user", {
-            headers: { Authorization: `Bearer ${data.access_token}`, Accept: "application/vnd.github+json" },
-          });
-          if (userRes.ok) username = (await userRes.json()).login;
-        }
-        resolve({ token: data.access_token, username: username || "" });
+        resolve(await exchangeGitHubToken(code, redirectUri));
       } catch (err) {
         reject(err);
       }
@@ -1173,11 +1172,10 @@ function getOpenAITools() {
 async function chatExecuteToolCall(name, input) {
   const tool = TOOLS.find(t => t.name === name);
   const t0 = Date.now();
-  const id = ++_toolLogId;
-  let result = tool
+  const result = tool
     ? await tool.handler(input).catch(err => ({ error: String(err) }))
     : { error: `Unknown tool: ${name}` };
-  appendToolLog({ id, toolName: name, params: input, result, ts: new Date(), durationMs: Date.now() - t0 });
+  appendToolLog({ toolName: name, params: input, result, ts: new Date(), durationMs: Date.now() - t0 });
   return result;
 }
 
@@ -1202,12 +1200,15 @@ async function sendChatMsg() {
   showChatSpinner();
 
   try {
-    if (chatState.provider === "local") {
-      await runConversationLocal(chatState.abortCtrl.signal);
-    } else if (chatState.provider === "github") {
-      await runConversationGitHub(key, chatState.abortCtrl.signal);
-    } else {
-      await runConversationClaude(key, chatState.abortCtrl.signal);
+    switch (chatState.provider) {
+      case "local":
+        await runConversationLocal(chatState.abortCtrl.signal);
+        break;
+      case "github":
+        await runConversationGitHub(key, chatState.abortCtrl.signal);
+        break;
+      default:
+        await runConversationClaude(key, chatState.abortCtrl.signal);
     }
   } catch (err) {
     handleStreamError(err);
@@ -1216,7 +1217,7 @@ async function sendChatMsg() {
   }
 }
 
-// ── Local Claude proxy (personal account via claude CLI) ──────────────────────
+// ── Local Claude proxy (personal account via OAuth) ───────────────────────────
 
 const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
 
@@ -1307,8 +1308,7 @@ async function runConversationClaude(apiKey, signal, url = "https://api.anthropi
           }
           case "content_block_stop": {
             if (blockType === "text" && textContent) {
-              if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-              if (textEl) textEl.innerHTML = renderMarkdown(textContent);
+              rafId = flushStreamingText(textEl, textContent, rafId);
               contentBlocks.push({ type: "text", text: textContent });
               textEl = null;
               textContent = "";
@@ -1373,6 +1373,7 @@ async function* parseSSEStream(body) {
     if (line.startsWith("event: ")) {
       currentEvent = line.slice(7).trim();
     } else if (line.startsWith("data: ") && currentEvent) {
+      // Skip non-JSON SSE data lines (e.g. keepalives)
       try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch {}
       currentEvent = null;
     }
@@ -1460,11 +1461,7 @@ async function runConversationGitHub(token, signal) {
       return;
     }
 
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = 0;
-    }
-    if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
+    rafId = flushStreamingText(currentTextEl, currentTextContent, rafId);
 
     const toolCalls = Object.values(tcMap);
     const assistantMsg = { role: "assistant", content: currentTextContent || null };
@@ -1495,9 +1492,9 @@ async function runConversationGitHub(token, signal) {
 async function* parseOpenAIStream(body) {
   for await (const line of readStreamLines(body)) {
     if (!line.startsWith("data: ")) continue;
-    const data = line.slice(6).trim();
-    if (data === "[DONE]") return;
-    try { yield JSON.parse(data); } catch {}
+    const payload = line.slice(6).trim();
+    if (payload === "[DONE]") return;
+    try { yield JSON.parse(payload); } catch {}
   }
 }
 
@@ -1663,6 +1660,12 @@ function handleStreamError(err, prefix = "") {
 function scrollChatBottom() {
   const el = document.getElementById("chat-messages");
   if (el) el.scrollTop = el.scrollHeight;
+}
+
+function flushStreamingText(textEl, textContent, rafId) {
+  if (rafId) cancelAnimationFrame(rafId);
+  if (textEl) textEl.innerHTML = renderMarkdown(textContent);
+  return 0;
 }
 
 marked.use({ gfm: true, breaks: true });

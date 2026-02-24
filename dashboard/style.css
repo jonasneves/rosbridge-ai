@@ -1347,8 +1347,9 @@ body {
 }
 
 /* ── Dark mode ── */
-/* JS always sets data-theme explicitly (resolving "system" via matchMedia).
-   The @media fallback covers the brief pre-JS moment and no-JS scenarios. */
+/* JS sets data-theme="dark" explicitly (resolving "system" via matchMedia).
+   The @media selector covers the brief pre-JS moment and no-JS scenarios.
+   Both selectors share a single set of dark-mode variable values. */
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
