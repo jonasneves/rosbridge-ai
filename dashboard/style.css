@@ -1623,6 +1623,18 @@ html[data-theme="dark"] {
   font-weight: 600;
 }
 
+.chat-msg-assistant p { margin: 4px 0; }
+.chat-msg-assistant p:first-child { margin-top: 0; }
+.chat-msg-assistant p:last-child  { margin-bottom: 0; }
+
+.chat-msg-assistant ul,
+.chat-msg-assistant ol {
+  padding-left: 1.5em;
+  margin: 4px 0;
+}
+
+.chat-msg-assistant li { margin: 2px 0; }
+
 /* ── GitHub auth bar elements ── */
 
 .github-connect-btn {

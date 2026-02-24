@@ -1151,7 +1151,9 @@ function getSystemPrompt() {
     const preview = topics.slice(0, 20).join(", ");
     lines.push(`Known topics (${topics.length}): ${preview}${topics.length > 20 ? "…" : ""}`);
   } else {
-    lines.push("The broker is not currently connected. Use connect_to_broker to connect first.");
+    const inputUrl = document.getElementById("url-input")?.value?.trim();
+    const urlHint = inputUrl ? ` The URL currently configured in the dashboard is: ${inputUrl}.` : "";
+    lines.push(`Not connected to MQTT broker.${urlHint} Call connect_to_broker to connect — do not ask the user for the URL unless it is missing.`);
   }
   if (state.selected) lines.push(`User is currently viewing topic "${state.selected.name}".`);
   lines.push("Publish payloads as plain strings (e.g. 'true', 'false', '42') or JSON strings.");
