@@ -1,17 +1,10 @@
 # MQTT AI Dashboard
 
-Browser dashboard for controlling physical robots with AI. Runs entirely in the browser — no backend, no server, no Python.
+Browser dashboard for controlling physical robots with AI. Runs entirely in the browser — no backend.
 
 ## Architecture
 
-```
-Browser  ──WebSocket──  MQTT Broker  ──TCP──  ESP32
-AI chat + topic browser                       firmware
-```
-
-The AI model is called directly from the browser using MQTT tool definitions. When it responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes on the other end.
-
-Both sides use a public HiveMQ broker by default — no local setup needed.
+The AI model runs in the browser and publishes MQTT tool calls directly to the broker. The ESP32 subscribes on the other end. Both sides use a public HiveMQ broker by default — no local setup needed.
 
 ![Architecture and sequence diagrams](diagram.png)
 
