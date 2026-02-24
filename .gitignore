@@ -1,4 +1,5 @@
 .claude/
+.env
 dashboard/node_modules/
 dashboard/dist/
 dashboard/config.json

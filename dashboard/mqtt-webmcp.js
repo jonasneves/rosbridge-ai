@@ -1220,142 +1220,108 @@ async function sendChatMsg() {
 
 const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
 
-function buildLocalPrompt() {
-  const parts = [
-    getSystemPrompt(),
-    "Respond with plain text only — do not use any tools or run any commands.",
-    "",
-  ];
-  for (const msg of chatState.convMsgs) {
-    const label = msg.role === "user" ? "User" : "Assistant";
-    const content = typeof msg.content === "string"
-      ? msg.content
-      : msg.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
-    if (content) parts.push(`${label}: ${content}`);
-  }
-  return parts.join("\n");
-}
-
 async function runConversationLocal(signal) {
-  let res;
-  try {
-    res = await fetch(LOCAL_PROXY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal,
-      body: JSON.stringify({ prompt: buildLocalPrompt() }),
-    });
-  } catch {
-    throw new Error("Local Claude proxy not running. Start it with: make proxy");
-  }
-  if (!res.ok) throw new Error(`Proxy error ${res.status}`);
-
-  let responseText = "";
-  for await (const line of readStreamLines(res.body)) {
-    if (!line.trim()) continue;
-    try {
-      const evt = JSON.parse(line);
-      if (evt.type === "result" && evt.subtype === "success") responseText = evt.result;
-    } catch {}
-  }
-
-  hideChatSpinner();
-  if (responseText) {
-    appendChatMsg("assistant", responseText);
-    chatState.convMsgs.push({ role: "assistant", content: responseText });
-  }
+  return runConversationClaude(null, signal, LOCAL_PROXY_URL);
 }
 
 // ── Claude conversation ───────────────────────────────────────────────────────
 
-async function runConversationClaude(apiKey, signal) {
+function buildClaudeHeaders(apiKey) {
+  const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  }
+  return headers;
+}
+
+async function fetchClaudeStream(apiKey, signal, url) {
+  const res = await fetch(url, {
+    method: "POST",
+    signal,
+    headers: buildClaudeHeaders(apiKey),
+    body: JSON.stringify({
+      model: chatState.model,
+      max_tokens: 4096,
+      system: getSystemPrompt(),
+      messages: chatState.convMsgs,
+      tools: getClaudeTools(),
+      stream: true,
+    }),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
+  }
+  return res.body;
+}
+
+async function runConversationClaude(apiKey, signal, url = "https://api.anthropic.com/v1/messages") {
   while (true) {
-    let body;
+    let stream;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        signal,
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: chatState.model,
-          max_tokens: 4096,
-          system: getSystemPrompt(),
-          messages: chatState.convMsgs,
-          tools: getClaudeTools(),
-          stream: true,
-        }),
-      });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
-      }
-      body = res.body;
+      stream = await fetchClaudeStream(apiKey, signal, url);
     } catch (err) {
       handleStreamError(err);
       return;
     }
 
     const contentBlocks = [];
-    let currentTextEl = null;
-    let currentTextContent = "";
-    let currentToolInput = "";
-    let currentBlockType = null;
+    let textEl = null;
+    let textContent = "";
+    let toolInput = "";
+    let blockType = null;
     let rafId = 0;
 
     try {
-      for await (const { event, data } of parseSSEStream(body)) {
+      for await (const { event, data } of parseSSEStream(stream)) {
         switch (event) {
           case "content_block_start": {
             const block = data.content_block;
-            currentBlockType = block.type;
+            blockType = block.type;
             if (block.type === "text") {
               hideChatSpinner();
-              currentTextContent = block.text || "";
-              currentTextEl = appendChatMsg("assistant", currentTextContent);
+              textContent = block.text || "";
+              textEl = appendChatMsg("assistant", textContent);
             } else if (block.type === "tool_use") {
               contentBlocks.push({ type: "tool_use", id: block.id, name: block.name, input: {} });
-              currentToolInput = "";
+              toolInput = "";
               appendChatToolCall(block.id, block.name);
             }
             break;
           }
           case "content_block_delta": {
             if (data.delta.type === "text_delta") {
-              currentTextContent += data.delta.text;
-              if (currentTextEl && !rafId) {
+              textContent += data.delta.text;
+              if (textEl && !rafId) {
                 rafId = requestAnimationFrame(() => {
                   rafId = 0;
-                  if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
+                  if (textEl) textEl.innerHTML = renderMarkdown(textContent);
                   scrollChatBottom();
                 });
               }
             } else if (data.delta.type === "input_json_delta") {
-              currentToolInput += data.delta.partial_json;
+              toolInput += data.delta.partial_json;
             }
             break;
           }
           case "content_block_stop": {
-            if (currentBlockType === "text" && currentTextContent) {
-              if (rafId) {
-                cancelAnimationFrame(rafId);
-                rafId = 0;
-              }
-              if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
-              contentBlocks.push({ type: "text", text: currentTextContent });
-              currentTextEl = null;
-              currentTextContent = "";
-            } else if (currentBlockType === "tool_use") {
+            if (blockType === "text" && textContent) {
+              if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+              if (textEl) textEl.innerHTML = renderMarkdown(textContent);
+              contentBlocks.push({ type: "text", text: textContent });
+              textEl = null;
+              textContent = "";
+            } else if (blockType === "tool_use") {
               const toolBlock = contentBlocks[contentBlocks.length - 1];
-              try { toolBlock.input = currentToolInput ? JSON.parse(currentToolInput) : {}; }
-              catch { toolBlock.input = {}; }
-              currentToolInput = "";
+              try {
+                toolBlock.input = toolInput ? JSON.parse(toolInput) : {};
+              } catch {
+                toolBlock.input = {};
+              }
+              toolInput = "";
             }
-            currentBlockType = null;
+            blockType = null;
             break;
           }
         }
