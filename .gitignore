@@ -1,6 +1,14 @@
+# OS
+.DS_Store
+
+# Claude Code
 .claude/
+
+# Environment / credentials
 .env
+config.mk
+
+# Dashboard build artifacts
 dashboard/node_modules/
 dashboard/dist/
 dashboard/config.json
-config.mk

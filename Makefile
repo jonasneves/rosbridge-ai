@@ -8,6 +8,7 @@ MQTT_IP   ?= broker.hivemq.com
 ESP32_IP  ?=
 BUILD_DIR := /tmp/esp32-led-build
 ESPOTA    := $(shell find ~/Library/Arduino15/packages/esp32 -name espota.py 2>/dev/null | sort -V | tail -1)
+MONITOR    = arduino-cli monitor --port "$(PORT)" --config baudrate=115200,dtr=off,rts=off
 
 BUILD_FLAGS := 'build.extra_flags=-DWIFI_SSID="$(strip $(WIFI_SSID))" -DWIFI_PASS="$(strip $(WIFI_PASS))" -DMQTT_IP="$(strip $(MQTT_IP))"'
 
@@ -84,9 +85,9 @@ ota: compile
 	@python3 "$(ESPOTA)" -i "$(ESP32_IP)" -f "$(BUILD_DIR)/esp32_led.ino.bin"
 
 monitor:
-	arduino-cli monitor --port "$(PORT)" --config baudrate=115200,dtr=off,rts=off
+	$(MONITOR)
 
 flash-monitor: flash
 	@echo "Waiting for ESP32 to boot..."
 	@sleep 2
-	arduino-cli monitor --port "$(PORT)" --config baudrate=115200,dtr=off,rts=off
+	$(MONITOR)

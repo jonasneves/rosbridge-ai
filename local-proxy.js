@@ -8,7 +8,8 @@ const { request: httpsRequest } = require("https");
 const fs = require("fs");
 const path = require("path");
 
-// Load .env (no dotenv dependency)
+// Minimal .env loader (no dotenv dependency).
+// Matches KEY=value lines, strips optional surrounding quotes.
 const envFile = path.join(__dirname, ".env");
 if (fs.existsSync(envFile)) {
   for (const line of fs.readFileSync(envFile, "utf8").split("\n")) {
@@ -17,8 +18,8 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-const PORT    = 7337;
-const MODEL   = "claude-sonnet-4-6";
+const PORT = 7337;
+const MODEL = "claude-sonnet-4-6";
 const MAX_RPM = 10;
 
 const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -32,7 +33,7 @@ setInterval(() => { reqCount = 0; }, 60_000);
 
 function forwardErrorResponse(apiRes, res, cors) {
   let body = "";
-  apiRes.on("data", chunk => (body += chunk));
+  apiRes.on("data", (chunk) => { body += chunk; });
   apiRes.on("end", () => {
     console.error("API error:", body);
     res.writeHead(apiRes.statusCode, cors);
@@ -67,7 +68,7 @@ createServer((req, res) => {
   }
 
   let body = "";
-  req.on("data", chunk => (body += chunk));
+  req.on("data", (chunk) => { body += chunk; });
   req.on("end", () => {
     let msg;
     try {
@@ -78,7 +79,7 @@ createServer((req, res) => {
       return;
     }
 
-    // The dashboard sends "claude" as a shorthand; normalize to a full model ID
+    // Normalize shorthand model name to a full model ID
     if (!msg.model?.startsWith("claude-")) msg.model = MODEL;
     const payload = JSON.stringify(msg);
 
@@ -107,14 +108,13 @@ createServer((req, res) => {
       apiRes.pipe(res);
     });
 
-    apiReq.on("error", e => {
+    apiReq.on("error", (e) => {
       console.error("Request failed:", e.message);
       if (!res.headersSent) res.writeHead(500, cors);
       res.end();
     });
 
-    apiReq.write(payload);
-    apiReq.end();
+    apiReq.end(payload);
   });
 }).listen(PORT, "127.0.0.1", () => {
   console.log(`\n  Claude proxy → http://127.0.0.1:${PORT}`);

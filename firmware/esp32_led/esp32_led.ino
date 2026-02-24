@@ -31,36 +31,88 @@
 #define WIFI_PASS "your_wifi_password"
 #endif
 #ifndef MQTT_IP
-#define MQTT_IP "broker.hivemq.com"  // public cloud broker — no setup needed
+#define MQTT_IP "broker.hivemq.com"
 #endif
 
 const int MQTT_PORT = 1883;
 const int LED_PIN   = 33;  // red LED on ESP32-CAM-MB (active low)
+const unsigned long RECONNECT_INTERVAL_MS = 5000;
+const char* TOPIC_PREFIX = "devices/";
 
-String topicCmd;  // devices/<mac>/led/command
-String topicAnn;  // devices/<mac>
+String commandTopic;    // devices/<mac>/led/command
+String announceTopic;   // devices/<mac>
+String clientId;        // esp32-<mac>
+String announcement;    // JSON payload for device discovery
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-void onMessage(char* topic, byte* payload, unsigned int length) {
-  String msg;
-  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+// e.g. MAC "D4:E9:F4:A2:A0:44" -> prefix "devices/d4e9f4a2a044"
+void buildTopicsFromMAC() {
+  String mac = WiFi.macAddress();
+  mac.toLowerCase();
+  mac.replace(":", "");
 
-  if (strcmp(topic, topicCmd.c_str()) == 0) {
-    bool on = (msg == "true" || msg == "1");
-    digitalWrite(LED_PIN, on ? LOW : HIGH);  // LOW = on
-    Serial.println(on ? "LED on" : "LED off");
-  }
+  announceTopic = String(TOPIC_PREFIX) + mac;
+  commandTopic  = announceTopic + "/led/command";
+  clientId      = "esp32-" + mac;
+  announcement  = "{\"topics\":[\"" + commandTopic + "\"]}";
+
+  Serial.println("Topic: " + commandTopic);
 }
 
-unsigned long lastReconnectMs = 0;
-const unsigned long RECONNECT_INTERVAL = 5000;
+bool payloadEquals(byte* payload, unsigned int length, const char* expected) {
+  return length == strlen(expected)
+      && memcmp(payload, expected, length) == 0;
+}
+
+void onMessage(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, commandTopic.c_str()) != 0) return;
+
+  bool ledOn = payloadEquals(payload, length, "true")
+            || payloadEquals(payload, length, "1");
+
+  digitalWrite(LED_PIN, ledOn ? LOW : HIGH);  // LOW = on (active low)
+  Serial.println(ledOn ? "LED on" : "LED off");
+}
+
+void setupOTA() {
+  ArduinoOTA.setHostname("esp32-led");
+  ArduinoOTA.onStart([]() {
+    mqttClient.disconnect();  // free WiFi bandwidth for OTA
+    Serial.println("OTA start");
+  });
+  ArduinoOTA.onEnd([]()   { Serial.println("OTA done"); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA error [%u]\n", e); });
+  ArduinoOTA.begin();
+  Serial.println("OTA ready — `make ota ESP32_IP=" + WiFi.localIP().toString() + "`");
+}
+
+void mqttReconnect() {
+  static unsigned long lastAttemptMs = 0;
+  unsigned long now = millis();
+
+  if (now - lastAttemptMs < RECONNECT_INTERVAL_MS) return;
+  lastAttemptMs = now;
+
+  Serial.print("Connecting to MQTT...");
+
+  if (!mqttClient.connect(clientId.c_str())) {
+    Serial.print(" failed, rc=");
+    Serial.println(mqttClient.state());
+    return;
+  }
+
+  Serial.println(" connected (" + String(MQTT_IP) + ")");
+  mqttClient.publish(announceTopic.c_str(), announcement.c_str(), true);
+  mqttClient.subscribe(commandTopic.c_str());
+}
 
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);  // disable brownout detector
   Serial.begin(115200);
   delay(2000);
+
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);  // off by default
 
@@ -73,48 +125,19 @@ void setup() {
   }
   Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
 
-  // Build unique topic prefix from MAC address (e.g. "d4e9f4a2a044")
-  String mac = WiFi.macAddress();
-  mac.toLowerCase();
-  mac.replace(":", "");
-  topicCmd = "devices/" + mac + "/led/command";
-  topicAnn = "devices/" + mac;
-  Serial.println("Topic: " + topicCmd);
-
-  ArduinoOTA.setHostname("esp32-led");
-  ArduinoOTA.onStart([]() {
-    mqttClient.disconnect();  // free up WiFi bandwidth for OTA
-    Serial.println("OTA start");
-  });
-  ArduinoOTA.onEnd([]()   { Serial.println("OTA done");  });
-  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA error [%u]\n", e); });
-  ArduinoOTA.begin();
-  Serial.println("OTA ready — `make ota ESP32_IP=" + WiFi.localIP().toString() + "`");
+  buildTopicsFromMAC();
+  setupOTA();
 
   mqttClient.setServer(MQTT_IP, MQTT_PORT);
   mqttClient.setCallback(onMessage);
 }
 
 void loop() {
-  ArduinoOTA.handle();  // must run every loop, even when MQTT is disconnected
+  ArduinoOTA.handle();
 
-  if (!mqttClient.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectMs >= RECONNECT_INTERVAL) {
-      lastReconnectMs = now;
-      Serial.print("Connecting to MQTT...");
-      String clientId = "esp32-" + topicAnn.substring(8);  // esp32-<mac>
-      if (mqttClient.connect(clientId.c_str())) {
-        Serial.println(" connected (" + String(MQTT_IP) + ")");
-        String announcement = "{\"topics\":[\"" + topicCmd + "\"]}";
-        mqttClient.publish(topicAnn.c_str(), announcement.c_str(), true);
-        mqttClient.subscribe(topicCmd.c_str());
-      } else {
-        Serial.print(" failed, rc=");
-        Serial.println(mqttClient.state());
-      }
-    }
-  } else {
+  if (mqttClient.connected()) {
     mqttClient.loop();
+  } else {
+    mqttReconnect();
   }
 }

@@ -1349,9 +1349,10 @@ body {
 /* ── Dark mode ── */
 /* JS sets data-theme="dark" explicitly (resolving "system" via matchMedia).
    The @media selector covers the brief pre-JS moment and no-JS scenarios.
-   Both selectors share a single set of dark-mode variable values. */
+   Both selectors share identical variable values — keep them in sync. */
 
 @media (prefers-color-scheme: dark) {
+  /* [dark-vars] duplicated below in html[data-theme="dark"] — keep in sync */
   :root:not([data-theme]) {
     --text-rgb: 237, 233, 227;
     --bg: #191c19;
@@ -1372,6 +1373,7 @@ body {
   }
 }
 
+/* [dark-vars] duplicated above in @media (prefers-color-scheme: dark) — keep in sync */
 html[data-theme="dark"] {
   --text-rgb: 237, 233, 227;
   --bg: #191c19;

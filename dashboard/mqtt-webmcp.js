@@ -37,7 +37,7 @@ function sleep(ms) {
 function toast(msg, kind = "default", durationMs = 3000) {
   const container = document.getElementById("toast-container");
   const el = document.createElement("div");
-  el.className = `toast${kind !== "default" ? " " + kind : ""}`;
+  el.className = kind === "default" ? "toast" : `toast ${kind}`;
   el.textContent = msg;
   container.appendChild(el);
   setTimeout(() => el.remove(), durationMs);
@@ -208,39 +208,44 @@ function connect(url) {
     state.connecting = false;
     updateStatusDot(false, true);
     document.getElementById("status-text").textContent = "Error";
-    toast(`Connection error: ${err.message || err}`, "error");
+    const detail = err.message || err;
+    toast(`Connection error: ${detail}`, "error");
   });
 
   client.on("close", () => {
-    state.connected = false;
-    state.connecting = false;
-    updateStatusDot(false, false);
-    document.getElementById("connect-btn").textContent = "Connect";
-    state.seenTopics = [];
-    state.watching = null;
-    state.selected = null;
-    state.onceCallbacks = {};
-    state.topicListeners = {};
-    state.topicMsgCounts = {};
-    unpinAllTopics();
-    renderSidebar();
-    renderMainPlaceholder();
+    resetConnectionState();
     if (!state.manualDisconnect) scheduleReconnect();
     state.manualDisconnect = false;
   });
 }
 
-function statusDotModifier(connected, error, connecting) {
-  if (connected) return "connected";
-  if (connecting) return "connecting";
-  if (error) return "error";
-  return "";
+function resetConnectionState() {
+  state.connected = false;
+  state.connecting = false;
+  state.seenTopics = [];
+  state.watching = null;
+  state.selected = null;
+  state.onceCallbacks = {};
+  state.topicListeners = {};
+  state.topicMsgCounts = {};
+  updateStatusDot(false, false);
+  document.getElementById("connect-btn").textContent = "Connect";
+  unpinAllTopics();
+  renderSidebar();
+  renderMainPlaceholder();
 }
 
 function updateStatusDot(connected, error = false, connecting = false) {
   const dot = document.getElementById("status-dot");
-  const modifier = statusDotModifier(connected, error, connecting);
-  dot.className = modifier ? `status-dot ${modifier}` : "status-dot";
+  if (connected) {
+    dot.className = "status-dot connected";
+  } else if (connecting) {
+    dot.className = "status-dot connecting";
+  } else if (error) {
+    dot.className = "status-dot error";
+  } else {
+    dot.className = "status-dot";
+  }
 }
 
 // ── Sidebar rendering ─────────────────────────────────────────────────────────
@@ -929,10 +934,6 @@ function createLogEntryEl(entry) {
 }
 
 async function replayToolCall(entry) {
-  if (!TOOLS.some(t => t.name === entry.toolName)) {
-    toast(`Tool "${entry.toolName}" not found`, "error");
-    return;
-  }
   const result = await chatExecuteToolCall(entry.toolName, entry.params);
   if (result.error) {
     toast(`Replay failed: ${result.error}`, "error");
@@ -1159,21 +1160,25 @@ function getSystemPrompt() {
 }
 
 function getClaudeTools() {
-  return TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+  return TOOLS.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.parameters,
+  }));
 }
 
 function getOpenAITools() {
-  return TOOLS.map(t => ({
+  return TOOLS.map((t) => ({
     type: "function",
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
 }
 
 async function chatExecuteToolCall(name, input) {
-  const tool = TOOLS.find(t => t.name === name);
+  const tool = TOOLS.find((t) => t.name === name);
   const t0 = Date.now();
   const result = tool
-    ? await tool.handler(input).catch(err => ({ error: String(err) }))
+    ? await tool.handler(input).catch((err) => ({ error: String(err) }))
     : { error: `Unknown tool: ${name}` };
   appendToolLog({ toolName: name, params: input, result, ts: new Date(), durationMs: Date.now() - t0 });
   return result;
@@ -1184,9 +1189,19 @@ async function sendChatMsg() {
   const text = input.value.trim();
   if (!text || chatState.busy) return;
 
-  const key = chatState.provider === "github" ? chatState.githubAuth?.token : chatState.claudeKey;
+  let key;
+  if (chatState.provider === "github") {
+    key = chatState.githubAuth?.token;
+  } else {
+    key = chatState.claudeKey;
+  }
+
   if (chatState.provider !== "local" && !key) {
-    toast(chatState.provider === "github" ? "Connect GitHub above" : "Enter your Anthropic API key first", "error");
+    if (chatState.provider === "github") {
+      toast("Connect GitHub above", "error");
+    } else {
+      toast("Enter your Anthropic API key first", "error");
+    }
     return;
   }
 
@@ -1316,7 +1331,7 @@ async function runConversationClaude(apiKey, signal, url = "https://api.anthropi
               const toolBlock = contentBlocks[contentBlocks.length - 1];
               try {
                 toolBlock.input = toolInput ? JSON.parse(toolInput) : {};
-              } catch {
+              } catch { /* incomplete JSON from streaming, default to empty */
                 toolBlock.input = {};
               }
               toolInput = "";
@@ -1374,7 +1389,7 @@ async function* parseSSEStream(body) {
       currentEvent = line.slice(7).trim();
     } else if (line.startsWith("data: ") && currentEvent) {
       // Skip non-JSON SSE data lines (e.g. keepalives)
-      try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch {}
+      try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch { /* non-JSON line, skip */ }
       currentEvent = null;
     }
   }
@@ -1466,8 +1481,9 @@ async function runConversationGitHub(token, signal) {
     const toolCalls = Object.values(tcMap);
     const assistantMsg = { role: "assistant", content: currentTextContent || null };
     if (toolCalls.length) {
-      assistantMsg.tool_calls = toolCalls.map(tc => ({
-        id: tc.id, type: "function",
+      assistantMsg.tool_calls = toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function",
         function: { name: tc.name, arguments: tc.arguments },
       }));
     }
@@ -1480,7 +1496,7 @@ async function runConversationGitHub(token, signal) {
 
     for (const tc of toolCalls) {
       let parsedArgs;
-      try { parsedArgs = JSON.parse(tc.arguments || "{}"); } catch { parsedArgs = {}; }
+      try { parsedArgs = JSON.parse(tc.arguments || "{}"); } catch { /* malformed args, default to empty */ parsedArgs = {}; }
       const result = await chatExecuteToolCall(tc.name, parsedArgs);
       updateChatToolCall(tc.id, result, parsedArgs);
       chatState.convMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
@@ -1494,7 +1510,7 @@ async function* parseOpenAIStream(body) {
     if (!line.startsWith("data: ")) continue;
     const payload = line.slice(6).trim();
     if (payload === "[DONE]") return;
-    try { yield JSON.parse(payload); } catch {}
+    try { yield JSON.parse(payload); } catch { /* malformed chunk, skip */ }
   }
 }
 
@@ -1546,8 +1562,8 @@ function showMsgContextMenu(e, msgEl, text, msgIndex) {
   if (r.right  > window.innerWidth)  menu.style.left = `${e.clientX - r.width}px`;
   if (r.bottom > window.innerHeight) menu.style.top  = `${e.clientY - r.height}px`;
 
-  menu.addEventListener("click", e => {
-    const action = e.target.dataset.action;
+  menu.addEventListener("click", (evt) => {
+    const action = evt.target.dataset.action;
     if (!action) return;
     menu.remove();
     truncateConvAt(msgEl, msgIndex);
@@ -1563,7 +1579,9 @@ function showMsgContextMenu(e, msgEl, text, msgIndex) {
 
   const dismiss = () => menu.remove();
   setTimeout(() => document.addEventListener("click", dismiss, { once: true }), 0);
-  document.addEventListener("keydown", e => { if (e.key === "Escape") menu.remove(); }, { once: true });
+  document.addEventListener("keydown", (evt) => {
+    if (evt.key === "Escape") menu.remove();
+  }, { once: true });
 }
 
 function nextGptModel() {
