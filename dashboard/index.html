@@ -28,6 +28,13 @@
       <span class="status-dot" id="status-dot"></span>
       <span id="status-text">Disconnected</span>
     </div>
+    <div class="status-wrap" id="webmcp-status-wrap">
+      <button class="status-row" id="webmcp-status-row" type="button" title="Show WebMCP tools">
+        <span class="status-dot" id="webmcp-status-dot"></span>
+        <span id="webmcp-status-text">WebMCP</span>
+      </button>
+      <div class="tools-popover" id="webmcp-tools-popover" hidden role="dialog" aria-label="WebMCP tools"></div>
+    </div>
     <div class="topbar-spacer"></div>
     <div class="url-wrap">
       <input
@@ -154,10 +161,6 @@
         </div>
 
       </nav>
-      <div class="webmcp-badge-wrap">
-        <button class="webmcp-badge" id="webmcp-badge" type="button">WebMCP: checking…</button>
-        <div class="webmcp-popover" id="webmcp-popover" hidden role="dialog" aria-label="Registered WebMCP tools"></div>
-      </div>
     </div>
 
     <!-- Main column -->

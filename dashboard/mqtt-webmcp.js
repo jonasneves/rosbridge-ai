@@ -877,10 +877,11 @@ function registerWebMCPTools() {
 }
 
 function updateWebMCPBadge(registered) {
-  const badge = document.getElementById("webmcp-badge");
+  const dot  = document.getElementById("webmcp-status-dot");
+  const text = document.getElementById("webmcp-status-text");
   _webmcpActive = registered > 0;
-  badge.className = "webmcp-badge" + (_webmcpActive ? " ok" : "");
-  badge.textContent = _webmcpActive ? `WebMCP · ${registered} tools` : "WebMCP · inactive";
+  if (dot)  dot.className   = "status-dot" + (_webmcpActive ? " connected" : "");
+  if (text) text.textContent = _webmcpActive ? `WebMCP · ${registered} tools` : "WebMCP · inactive";
 }
 
 // ── Tool call log ─────────────────────────────────────────────────────────────
@@ -1800,31 +1801,25 @@ registerWebMCPTools();
 initChat();
 initTopicPrefix();
 
-// ── WebMCP badge popover ───────────────────────────────────────────────────────
+// ── WebMCP tools popover ───────────────────────────────────────────────────────
 
-document.getElementById("webmcp-badge").addEventListener("click", () => {
-  const popover = document.getElementById("webmcp-popover");
+document.getElementById("webmcp-status-row").addEventListener("click", () => {
+  const popover = document.getElementById("webmcp-tools-popover");
   if (!popover) return;
-  if (!popover.hidden) {
-    popover.hidden = true;
-    return;
-  }
+  if (!popover.hidden) { popover.hidden = true; return; }
 
   popover.innerHTML = "";
 
   const header = document.createElement("div");
   header.className = "webmcp-popover-header";
-  if (_webmcpActive) {
-    header.innerHTML = `
-      <div class="webmcp-popover-title">WebMCP · active</div>
-      <div class="webmcp-popover-explain">These ${TOOLS.length} tools are registered with your browser's AI context, so native browser AI agents can call them directly. The <strong>AI chat panel</strong> on this page uses the same tools independently via the Anthropic/GitHub API — no flag needed.</div>
-    `;
-  } else {
-    header.innerHTML = `
-      <div class="webmcp-popover-title">WebMCP · inactive</div>
-      <div class="webmcp-popover-explain">The <strong>AI chat panel</strong> on this page already uses these ${TOOLS.length} tools directly via the Anthropic/GitHub API — no flag needed. WebMCP would <em>also</em> expose them to native browser AI agents. Requires Chrome 146+ Canary → <code>chrome://flags/#webmcp-for-testing</code>.</div>
-    `;
-  }
+  const titleText = _webmcpActive ? "WebMCP · active" : "WebMCP · inactive";
+  const explainHTML = _webmcpActive
+    ? `These ${TOOLS.length} tools are registered with your browser's AI context, so native browser AI agents can call them directly. The <strong>AI chat panel</strong> on this page uses the same tools independently via the Anthropic/GitHub API — no flag needed.`
+    : `The <strong>AI chat panel</strong> on this page already uses these ${TOOLS.length} tools directly via the Anthropic/GitHub API — no flag needed. WebMCP would <em>also</em> expose them to native browser AI agents. Requires Chrome 146+ Canary → <code>chrome://flags/#webmcp-for-testing</code>.`;
+  header.innerHTML = `
+    <div class="webmcp-popover-title">${titleText}</div>
+    <div class="webmcp-popover-explain">${explainHTML}</div>
+  `;
   popover.appendChild(header);
 
   const divider = document.createElement("div");
@@ -1909,7 +1904,7 @@ function closeAllPopovers(except) {
     settingsBtn.setAttribute("aria-expanded", "false");
   }
   if (except !== "webmcp") {
-    const wmcp = document.getElementById("webmcp-popover");
+    const wmcp = document.getElementById("webmcp-tools-popover");
     if (wmcp) wmcp.hidden = true;
   }
 }
@@ -1918,7 +1913,7 @@ document.addEventListener("click", (e) => {
   let except = null;
   if (e.target.closest(".url-wrap")) except = "presets";
   else if (e.target.closest(".settings-wrap")) except = "settings";
-  else if (e.target.closest(".webmcp-badge-wrap")) except = "webmcp";
+  else if (e.target.closest("#webmcp-status-wrap")) except = "webmcp";
   closeAllPopovers(except);
 });
 
