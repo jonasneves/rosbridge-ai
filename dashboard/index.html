@@ -102,17 +102,15 @@
           </select>
         </div>
 
-        <form class="settings-section" id="chat-claude-bar" onsubmit="event.preventDefault()">
+        <div class="settings-section" id="chat-claude-bar">
           <div class="settings-section-label">Anthropic API Key</div>
           <div class="settings-auth-row">
             <input type="password" class="chat-auth-input" id="chat-api-key" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key">
-            <button type="submit" class="btn btn-sm" id="chat-key-save">Save</button>
+            <button type="button" class="btn btn-sm" id="chat-key-save">Save</button>
           </div>
-        </form>
-
-        <div class="settings-section" id="chat-github-bar">
-          <!-- rendered by updateGitHubAuthBar() -->
         </div>
+
+        <div class="settings-section" id="chat-github-bar"></div>
 
         <div class="github-notice settings-notice" id="github-notice" hidden>
           <span>Tool calls may be less reliable than Claude.</span>
@@ -123,7 +121,6 @@
     </div>
   </header>
 
-  <!-- Body -->
   <div class="body">
 
     <!-- Sidebar -->
@@ -171,9 +168,7 @@
 
       <!-- Detail panel -->
       <main class="main" id="main-panel" aria-live="polite">
-        <div class="panel-placeholder" id="panel-placeholder">
-          <div>Connect to MQTT broker to get started.</div>
-        </div>
+        <div class="panel-placeholder" id="panel-placeholder">Connect to an MQTT broker to get started.</div>
       </main>
 
       <!-- Tool call log -->
@@ -218,13 +213,12 @@
   </div>
 </div>
 
-<!-- Toast container -->
 <div class="toast-container" id="toast-container" aria-live="assertive" aria-atomic="true"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script>window.DASHBOARD_CONFIG = {};</script>
-<script src="mqtt-webmcp.js"></script>
+<script type="module" src="mqtt-webmcp.js"></script>
 </body>
 </html>

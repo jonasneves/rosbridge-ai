@@ -1,6 +1,6 @@
-/* mqtt-webmcp.js — MQTT.js connection + WebMCP tool registration + UI logic */
+/* mqtt-webmcp.js -- MQTT connection + WebMCP tool registration + UI */
 
-// ── State ────────────────────────────────────────────────────────────────────
+import { GITHUB_CLIENT_ID, OAUTH_CALLBACK_ORIGIN, connectGitHub } from 'https://neevs.io/auth/connect.js';
 
 const DEFAULT_BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
 
@@ -11,15 +11,15 @@ const state = {
   manualDisconnect: false,
   url: localStorage.getItem("webmcp-broker-url") || DEFAULT_BROKER_URL,
   topicPrefix: localStorage.getItem("webmcp-topic-prefix") || "",
-  seenTopics: [],           // topics seen via '#' subscription
-  watching: null,           // topic name currently being live-watched
-  topicListeners: {},       // topic -> Set<callback> for persistent listeners
-  onceCallbacks: {},        // topic -> callback[] for one-shot receives
-  selected: null,           // { kind: "topic", name: string }
+  seenTopics: [],
+  watching: null,
+  topicListeners: {},
+  onceCallbacks: {},
+  selected: null,
   filter: "",
-  publishHistory: {},       // topic -> string[] (max 10, newest first)
-  continuousPublish: null,  // { timer } | null
-  pinnedTopics: {},         // topic -> { lastMsg: string | null }
+  publishHistory: {},
+  continuousPublish: null,
+  pinnedTopics: {},
   toolLog: [],
   reconnect: null,
   sidebarCollapsed: { topics: false },
@@ -28,18 +28,22 @@ const state = {
 
 let _toolLogId = 0;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
+
+function $(id) {
+  return document.getElementById(id);
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function toast(msg, kind = "default", durationMs = 3000) {
-  const container = document.getElementById("toast-container");
   const el = document.createElement("div");
-  el.className = kind === "default" ? "toast" : `toast ${kind}`;
+  el.className = "toast";
+  if (kind !== "default") el.classList.add(kind);
   el.textContent = msg;
-  container.appendChild(el);
+  $("toast-container").appendChild(el);
   setTimeout(() => el.remove(), durationMs);
 }
 
@@ -56,8 +60,11 @@ function escHtml(str) {
 }
 
 function prettyJson(str) {
-  try { return JSON.stringify(JSON.parse(str), null, 2); }
-  catch { return str; }
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch {
+    return str;
+  }
 }
 
 function isConnected() {
@@ -65,8 +72,11 @@ function isConnected() {
 }
 
 function parseHostname(url) {
-  try { return new URL(url).hostname; }
-  catch { return url; }
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
 }
 
 function formatBadgeCount(count) {
@@ -88,7 +98,7 @@ function trackTopic(topic) {
 }
 
 function attachJsonFormatter(id) {
-  const el = document.getElementById(id);
+  const el = $(id);
   if (!el) return;
   el.addEventListener("blur", () => {
     const val = el.value.trim();
@@ -96,27 +106,26 @@ function attachJsonFormatter(id) {
   });
 }
 
-// ── Auto-reconnect ────────────────────────────────────────────────────────────
+// Auto-reconnect
 
 const RECONNECT_MAX = 8;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_CAP_MS = 30000;
 
 function scheduleReconnect() {
-  if (!state.reconnect) state.reconnect = { attempts: 0, timer: null };
-  if (state.reconnect.attempts >= RECONNECT_MAX) {
+  const rc = (state.reconnect ??= { attempts: 0, timer: null });
+  if (rc.attempts >= RECONNECT_MAX) {
     state.reconnect = null;
     toast("Max reconnect attempts reached", "error");
-    updateStatusDot(false, true);
-    document.getElementById("status-text").textContent = "Disconnected";
+    updateStatusDot("error");
+    setStatusText("Disconnected");
     return;
   }
-  const delay = Math.min(RECONNECT_BASE_MS * 2 ** state.reconnect.attempts, RECONNECT_CAP_MS);
-  state.reconnect.attempts++;
-  updateStatusDot(false, false, true);
-  document.getElementById("status-text").textContent =
-    `Reconnecting in ${Math.round(delay / 1000)}s… (${state.reconnect.attempts}/${RECONNECT_MAX})`;
-  state.reconnect.timer = setTimeout(() => {
+  const delay = Math.min(RECONNECT_BASE_MS * 2 ** rc.attempts, RECONNECT_CAP_MS);
+  rc.attempts++;
+  updateStatusDot("connecting");
+  setStatusText(`Reconnecting in ${Math.round(delay / 1000)}s… (${rc.attempts}/${RECONNECT_MAX})`);
+  rc.timer = setTimeout(() => {
     if (!state.connected) connect(state.url);
   }, delay);
 }
@@ -127,7 +136,7 @@ function cancelReconnect() {
   state.reconnect = null;
 }
 
-// ── Connection ────────────────────────────────────────────────────────────────
+// Connection
 
 function connect(url) {
   cancelReconnect();
@@ -139,25 +148,25 @@ function connect(url) {
   }
   stopWatching();
 
-  updateStatusDot(false, false, true);
-  document.getElementById("status-text").textContent = "Connecting…";
+  updateStatusDot("connecting");
+  setStatusText("Connecting…");
   renderMainPlaceholder();
 
   state.url = url;
   localStorage.setItem("webmcp-broker-url", url);
-  const client = mqtt.connect(url, { reconnectPeriod: 0 }); // manual reconnect
+  const client = mqtt.connect(url, { reconnectPeriod: 0 });
   state.mqttClient = client;
 
   client.on("connect", () => {
     cancelReconnect();
     state.connected = true;
     state.connecting = false;
-    updateStatusDot(true, false);
-    document.getElementById("status-text").textContent = parseHostname(url);
-    document.getElementById("connect-btn").textContent = "Disconnect";
+    updateStatusDot("connected");
+    setStatusText(parseHostname(url));
+    $("connect-btn").textContent = "Disconnect";
     const prefix = state.topicPrefix;
-    client.subscribe(prefix + "#");              // passively discover all active topics under prefix
-    client.subscribe("devices/" + prefix + "#"); // device announcements (retained, replayed immediately)
+    client.subscribe(prefix + "#");
+    client.subscribe("devices/" + prefix + "#");
     renderSidebar();
     renderMainPlaceholder();
   });
@@ -165,39 +174,30 @@ function connect(url) {
   client.on("message", (topic, message) => {
     const msg = message.toString();
 
-    // Handle device announcements — auto-add advertised topics
     if (topic.startsWith("devices/")) {
       try {
         const { topics } = JSON.parse(msg);
         for (const t of topics) trackTopic(t);
         if (!state.selected && state.seenTopics.length > 0) selectTopic(state.seenTopics[0]);
-      } catch { /* ignore malformed announcements */ }
+      } catch {}
       return;
     }
 
-    // Track seen topics
     trackTopic(topic);
-
-    // Count and animate sidebar
     state.topicMsgCounts[topic] = (state.topicMsgCounts[topic] || 0) + 1;
     flashSidebarRow(topic);
     updateSidebarBadge(topic);
 
-    // Persistent listeners (e.g. duration-based subscriptions)
     if (state.topicListeners[topic]) {
       for (const cb of state.topicListeners[topic]) cb(msg);
     }
 
-    // One-shot callbacks
     if (state.onceCallbacks[topic]?.length) {
-      const toCall = state.onceCallbacks[topic].splice(0);
-      for (const cb of toCall) cb(msg);
+      for (const cb of state.onceCallbacks[topic].splice(0)) cb(msg);
     }
 
-    // Live watch panel
     if (state.watching === topic) showMsgCard(msg);
 
-    // Pinned cards
     if (state.pinnedTopics[topic]) {
       state.pinnedTopics[topic].lastMsg = msg;
       updateWatchCard(topic);
@@ -206,8 +206,8 @@ function connect(url) {
 
   client.on("error", (err) => {
     state.connecting = false;
-    updateStatusDot(false, true);
-    document.getElementById("status-text").textContent = "Error";
+    updateStatusDot("error");
+    setStatusText("Error");
     const detail = err.message || err;
     toast(`Connection error: ${detail}`, "error");
   });
@@ -228,35 +228,32 @@ function resetConnectionState() {
   state.onceCallbacks = {};
   state.topicListeners = {};
   state.topicMsgCounts = {};
-  updateStatusDot(false, false);
-  document.getElementById("connect-btn").textContent = "Connect";
+  updateStatusDot("idle");
+  $("connect-btn").textContent = "Connect";
   unpinAllTopics();
   renderSidebar();
   renderMainPlaceholder();
 }
 
-function updateStatusDot(connected, error = false, connecting = false) {
-  const dot = document.getElementById("status-dot");
-  if (connected) {
-    dot.className = "status-dot connected";
-  } else if (connecting) {
-    dot.className = "status-dot connecting";
-  } else if (error) {
-    dot.className = "status-dot error";
-  } else {
-    dot.className = "status-dot";
-  }
+function setStatusText(text) {
+  $("status-text").textContent = text;
 }
 
-// ── Sidebar rendering ─────────────────────────────────────────────────────────
+function updateStatusDot(status) {
+  const dot = $("status-dot");
+  dot.className = "status-dot";
+  if (status !== "idle") dot.classList.add(status);
+}
+
+// Sidebar rendering
 
 function renderMainPlaceholder() {
-  const main = document.getElementById("main-panel");
+  const main = $("main-panel");
   if (!state.connected) {
     const msg = state.connecting
       ? "Connecting…"
       : "Connect to an MQTT broker to get started.";
-    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>${msg}</div></div>`;
+    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder">${msg}</div>`;
     return;
   }
   main.innerHTML = `
@@ -276,16 +273,17 @@ function renderMainPlaceholder() {
 
 function renderSidebar() {
   renderTopicList();
-  const listEl = document.getElementById("topics-list");
-  const btn = document.getElementById("section-toggle-topics");
+  const collapsed = state.sidebarCollapsed.topics;
+  const listEl = $("topics-list");
+  const btn = $("section-toggle-topics");
   const chevron = btn?.parentElement?.querySelector(".sidebar-chevron");
-  if (listEl) listEl.hidden = state.sidebarCollapsed.topics;
-  if (btn) btn.setAttribute("aria-expanded", String(!state.sidebarCollapsed.topics));
-  if (chevron) chevron.classList.toggle("collapsed", state.sidebarCollapsed.topics);
+  if (listEl) listEl.hidden = collapsed;
+  if (btn) btn.setAttribute("aria-expanded", String(!collapsed));
+  if (chevron) chevron.classList.toggle("collapsed", collapsed);
 }
 
 function renderTopicList() {
-  const container = document.getElementById("topics-list");
+  const container = $("topics-list");
   container.innerHTML = "";
 
   const filtered = state.filter
@@ -301,9 +299,8 @@ function renderTopicList() {
     return;
   }
 
-  // Group topics by first namespace segment (split on first '/')
-  const groups = {}; // prefix -> [topic, ...]
-  const flat = [];   // topics with no '/'
+  const groups = {};
+  const flat = [];
   for (const topic of filtered) {
     const slash = topic.indexOf("/");
     if (slash === -1) {
@@ -325,9 +322,9 @@ function renderTopicList() {
     row.dataset.topic = topic;
 
     const btn = document.createElement("button");
-    btn.className = "sidebar-item" +
-      (isActive ? " active" : "") +
-      (indented ? " sidebar-item-indented" : "");
+    btn.className = "sidebar-item";
+    if (isActive) btn.classList.add("active");
+    if (indented) btn.classList.add("sidebar-item-indented");
     btn.textContent = displayText;
     btn.title = topic;
     btn.addEventListener("click", () => selectTopic(topic));
@@ -339,7 +336,7 @@ function renderTopicList() {
     badge.hidden = count === 0;
 
     const pinBtn = document.createElement("button");
-    pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
+    pinBtn.className = isPinned ? "pin-btn pinned" : "pin-btn";
     pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
     pinBtn.setAttribute("aria-pressed", String(isPinned));
     pinBtn.textContent = "⊕";
@@ -354,7 +351,6 @@ function renderTopicList() {
     return row;
   }
 
-  // Render namespace groups
   for (const [prefix, topics] of Object.entries(groups)) {
     if (topics.length === 1) {
       container.appendChild(makeTopicRow(topics[0], topics[0], false));
@@ -369,7 +365,7 @@ function renderTopicList() {
     header.setAttribute("aria-expanded", String(!isCollapsed));
 
     const chevron = document.createElement("span");
-    chevron.className = "sidebar-chevron" + (isCollapsed ? " collapsed" : "");
+    chevron.className = isCollapsed ? "sidebar-chevron collapsed" : "sidebar-chevron";
 
     header.appendChild(chevron);
     header.appendChild(document.createTextNode(prefix + "/"));
@@ -396,7 +392,6 @@ function renderTopicList() {
     container.appendChild(itemsEl);
   }
 
-  // Render flat topics
   for (const topic of flat) {
     container.appendChild(makeTopicRow(topic, topic, false));
   }
@@ -406,7 +401,7 @@ function flashSidebarRow(topic) {
   const row = document.querySelector(`.sidebar-item-row[data-topic="${CSS.escape(topic)}"]`);
   if (!row) return;
   row.classList.remove("flash-new");
-  void row.offsetWidth; // force reflow to restart animation
+  void row.offsetWidth;
   row.classList.add("flash-new");
   row.addEventListener("animationend", () => row.classList.remove("flash-new"), { once: true });
 }
@@ -418,7 +413,6 @@ function updateSidebarBadge(topic) {
     badge.textContent = formatBadgeCount(count);
     badge.hidden = false;
   }
-  // Update namespace group badge
   const slash = topic.indexOf("/");
   if (slash !== -1) {
     const prefix = topic.slice(0, slash);
@@ -430,20 +424,20 @@ function updateSidebarBadge(topic) {
   }
 }
 
-// ── Topic selection ───────────────────────────────────────────────────────────
+// Topic selection
 
 function selectTopic(topic) {
   stopWatching();
   stopContinuousPublish();
-  state.selected = { kind: "topic", name: topic };
+  state.selected = { name: topic };
   renderSidebar();
   renderTopicPanel(topic);
 }
 
-// ── Topic panel ────────────────────────────────────────────────────────────────
+// Topic panel
 
 function renderTopicPanel(topic) {
-  const main = document.getElementById("main-panel");
+  const main = $("main-panel");
 
   main.innerHTML = `
     <div class="detail-header">
@@ -459,8 +453,8 @@ function renderTopicPanel(topic) {
     <div class="controls-row">
       <button class="btn btn-sm" id="btn-subscribe-once">Subscribe once</button>
       <button class="btn btn-sm" id="btn-watch">Watch</button>
-      <button class="btn btn-sm" id="btn-stop-watch" style="display:none">Stop</button>
-      <span class="watch-indicator" id="watch-indicator" style="display:none">
+      <button class="btn btn-sm" id="btn-stop-watch" hidden>Stop</button>
+      <span class="watch-indicator" id="watch-indicator" hidden>
         <span class="watch-dot"></span> Watching
       </span>
     </div>
@@ -491,47 +485,40 @@ function renderTopicPanel(topic) {
     </div>
   `;
 
-  document.getElementById("btn-subscribe-once").addEventListener("click", () =>
-    doSubscribeOnce(topic)
-  );
-  document.getElementById("btn-watch").addEventListener("click", () => startWatching(topic));
-  document.getElementById("btn-stop-watch").addEventListener("click", stopWatching);
-  document.getElementById("btn-publish").addEventListener("click", () => doPublish(topic));
-
-  document.getElementById("publish-msg").addEventListener("keydown", (e) => {
+  $("btn-subscribe-once").addEventListener("click", () => doSubscribeOnce(topic));
+  $("btn-watch").addEventListener("click", () => startWatching(topic));
+  $("btn-stop-watch").addEventListener("click", stopWatching);
+  $("btn-publish").addEventListener("click", () => doPublish(topic));
+  $("publish-msg").addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       doPublish(topic);
     }
   });
-
-  document.getElementById("publish-history").addEventListener("change", (e) => {
-    if (e.target.value) {
-      document.getElementById("publish-msg").value = e.target.value;
-      e.target.value = "";
-    }
+  $("publish-history").addEventListener("change", (e) => {
+    if (!e.target.value) return;
+    $("publish-msg").value = e.target.value;
+    e.target.value = "";
   });
   renderPublishHistory(topic);
 
   function syncRepeatPublish() {
-    if (document.getElementById("repeat-checkbox")?.checked) {
-      const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
+    if ($("repeat-checkbox")?.checked) {
+      const hz = parseFloat($("repeat-hz").value) || 1;
       startContinuousPublish(topic, hz);
     } else {
       stopContinuousPublish();
     }
   }
-  document.getElementById("repeat-checkbox").addEventListener("change", syncRepeatPublish);
-  document.getElementById("repeat-hz").addEventListener("change", syncRepeatPublish);
-
+  $("repeat-checkbox").addEventListener("change", syncRepeatPublish);
+  $("repeat-hz").addEventListener("change", syncRepeatPublish);
   attachJsonFormatter("publish-msg");
 }
 
-// ── Publish history ───────────────────────────────────────────────────────────
+// Publish history
 
 function pushPublishHistory(topic, payload) {
-  if (!state.publishHistory[topic]) state.publishHistory[topic] = [];
-  const hist = state.publishHistory[topic];
+  const hist = (state.publishHistory[topic] ??= []);
   const existing = hist.indexOf(payload);
   if (existing !== -1) hist.splice(existing, 1);
   hist.unshift(payload);
@@ -539,28 +526,28 @@ function pushPublishHistory(topic, payload) {
 }
 
 function renderPublishHistory(topic) {
-  const sel = document.getElementById("publish-history");
-  const group = document.getElementById("publish-history-group");
+  const sel = $("publish-history");
+  const group = $("publish-history-group");
   if (!sel || !group) return;
   const hist = state.publishHistory[topic] || [];
   group.style.display = hist.length ? "" : "none";
-  sel.innerHTML = `<option value="">— History —</option>`;
+  sel.innerHTML = '<option value="">— History —</option>';
   for (const entry of hist) {
     const opt = document.createElement("option");
     opt.value = entry;
-    const label = entry.replace(/\s+/g, " ");
-    opt.textContent = label.length > 50 ? label.slice(0, 50) + "…" : label;
+    const collapsed = entry.replace(/\s+/g, " ");
+    opt.textContent = collapsed.length > 50 ? collapsed.slice(0, 50) + "…" : collapsed;
     sel.appendChild(opt);
   }
 }
 
-// ── Continuous publish ────────────────────────────────────────────────────────
+// Continuous publish
 
 function startContinuousPublish(topic, hz) {
   stopContinuousPublish();
   const interval = Math.max(50, Math.round(1000 / hz));
   const timer = setInterval(() => {
-    const payload = document.getElementById("publish-msg")?.value || "";
+    const payload = $("publish-msg")?.value || "";
     state.mqttClient?.publish(topic, payload);
   }, interval);
   state.continuousPublish = { timer };
@@ -570,14 +557,14 @@ function stopContinuousPublish() {
   if (!state.continuousPublish) return;
   clearInterval(state.continuousPublish.timer);
   state.continuousPublish = null;
-  const cb = document.getElementById("repeat-checkbox");
+  const cb = $("repeat-checkbox");
   if (cb) cb.checked = false;
 }
 
-// ── Subscribe / watch ─────────────────────────────────────────────────────────
+// Subscribe / watch
 
 async function doSubscribeOnce(topic) {
-  const btn = document.getElementById("btn-subscribe-once");
+  const btn = $("btn-subscribe-once");
   btn.disabled = true;
   btn.textContent = "Waiting…";
   try {
@@ -587,20 +574,18 @@ async function doSubscribeOnce(topic) {
   } catch (err) {
     toast(String(err), "error");
   } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "Subscribe once";
-    }
+    btn.disabled = false;
+    btn.textContent = "Subscribe once";
   }
 }
 
 function setWatchUI(watching) {
-  const btnWatch = document.getElementById("btn-watch");
-  const btnStop = document.getElementById("btn-stop-watch");
-  const indicator = document.getElementById("watch-indicator");
-  if (btnWatch) btnWatch.style.display = watching ? "none" : "";
-  if (btnStop) btnStop.style.display = watching ? "" : "none";
-  if (indicator) indicator.style.display = watching ? "" : "none";
+  const btnWatch = $("btn-watch");
+  const btnStop = $("btn-stop-watch");
+  const indicator = $("watch-indicator");
+  if (btnWatch) btnWatch.hidden = watching;
+  if (btnStop) btnStop.hidden = !watching;
+  if (indicator) indicator.hidden = !watching;
 }
 
 function startWatching(topic) {
@@ -616,15 +601,14 @@ function stopWatching() {
 }
 
 function showMsgCard(msg) {
-  const card = document.getElementById("last-msg");
+  const card = $("last-msg");
   if (!card) return;
   card.className = "data-card";
   card.textContent = prettyJson(msg);
 }
 
-async function doPublish(topic) {
-  const textarea = document.getElementById("publish-msg");
-  const payload = textarea.value;
+function doPublish(topic) {
+  const payload = $("publish-msg").value;
   if (!payload) {
     toast("Enter a payload to publish", "error");
     return;
@@ -635,15 +619,11 @@ async function doPublish(topic) {
   toast("Published", "ok");
 }
 
-// ── Pinned topics ─────────────────────────────────────────────────────────────
+// Pinned topics
 
 function togglePin(topic) {
-  if (state.pinnedTopics[topic]) unpinTopic(topic);
-  else pinTopic(topic);
-}
-
-function pinTopic(topic) {
-  if (state.pinnedTopics[topic] || !isConnected()) return;
+  if (state.pinnedTopics[topic]) return unpinTopic(topic);
+  if (!isConnected()) return;
   state.pinnedTopics[topic] = { lastMsg: null };
   renderPinnedRow();
   renderSidebar();
@@ -662,7 +642,7 @@ function unpinAllTopics() {
 }
 
 function renderPinnedRow() {
-  const row = document.getElementById("pinned-row");
+  const row = $("pinned-row");
   const pinned = Object.entries(state.pinnedTopics);
   row.hidden = !pinned.length;
   row.innerHTML = "";
@@ -690,55 +670,53 @@ function renderPinnedRow() {
 function updateWatchCard(topic) {
   const entry = state.pinnedTopics[topic];
   if (!entry) return;
-  const el = document.getElementById(`watch-msg-${cssId(topic)}`);
+  const el = $(`watch-msg-${cssId(topic)}`);
   if (el && entry.lastMsg !== null) {
     el.textContent = prettyJson(entry.lastMsg);
   }
 }
 
-// ── Core MQTT tool implementations ────────────────────────────────────────────
+// Core MQTT tool implementations
 
 function subscribeOnce(topic, timeoutMs = 5000) {
+  if (!isConnected()) return Promise.reject(new Error("Not connected"));
   return new Promise((resolve, reject) => {
-    if (!isConnected()) return reject(new Error("Not connected"));
-    let cb;
+    const callbacks = (state.onceCallbacks[topic] ??= []);
     const timer = setTimeout(() => {
-      if (state.onceCallbacks[topic]) {
-        state.onceCallbacks[topic] = state.onceCallbacks[topic].filter(c => c !== cb);
-      }
+      const idx = callbacks.indexOf(cb);
+      if (idx !== -1) callbacks.splice(idx, 1);
       reject(new Error(`Timeout waiting for message on ${topic}`));
     }, timeoutMs);
-    cb = (msg) => {
+    function cb(msg) {
       clearTimeout(timer);
       resolve(msg);
-    };
-    if (!state.onceCallbacks[topic]) state.onceCallbacks[topic] = [];
-    state.onceCallbacks[topic].push(cb);
+    }
+    callbacks.push(cb);
   });
 }
 
-async function subscribeForDuration(topic, durationSec, maxMessages = 100) {
+function subscribeForDuration(topic, durationSec, maxMessages = 100) {
   if (!isConnected()) throw new Error("Not connected");
   const collected = [];
-  if (!state.topicListeners[topic]) state.topicListeners[topic] = new Set();
+  const listeners = (state.topicListeners[topic] ??= new Set());
 
   return new Promise(resolve => {
     const cb = (msg) => {
       collected.push(msg);
       if (collected.length >= maxMessages) {
-        state.topicListeners[topic]?.delete(cb);
+        listeners.delete(cb);
         resolve(collected);
       }
     };
-    state.topicListeners[topic].add(cb);
+    listeners.add(cb);
     setTimeout(() => {
-      state.topicListeners[topic]?.delete(cb);
+      listeners.delete(cb);
       resolve(collected);
     }, durationSec * 1000);
   });
 }
 
-// ── Tools ─────────────────────────────────────────────────────────────────────
+// Tools
 
 const TOOLS = [
   {
@@ -755,7 +733,7 @@ const TOOLS = [
     handler: async ({ ip, port = 8884 }) => {
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const url = `${proto}://${ip}:${port}/mqtt`;
-      document.getElementById("url-input").value = url;
+      $("url-input").value = url;
       connect(url);
       return { status: "connecting", url };
     },
@@ -840,19 +818,18 @@ const TOOLS = [
   },
 ];
 
-// ── WebMCP tool registration ───────────────────────────────────────────────────
+// WebMCP tool registration
 
 let _webmcpActive = false;
 
 function registerWebMCPTools() {
   if (!navigator.modelContext) {
-    console.info("[WebMCP] navigator.modelContext not available — tools not registered");
+    console.info("[WebMCP] navigator.modelContext not available");
     updateWebMCPBadge(0);
     return;
   }
 
   let registered = 0;
-  let lastError = null;
   for (const tool of TOOLS) {
     try {
       navigator.modelContext.registerTool({
@@ -863,51 +840,52 @@ function registerWebMCPTools() {
       });
       registered++;
     } catch (err) {
-      lastError = err;
-      console.warn(`[WebMCP] Failed to register tool "${tool.name}":`, err);
+      console.warn(`[WebMCP] Failed to register "${tool.name}":`, err);
     }
   }
 
-  if (registered === 0) {
-    console.error("[WebMCP] No tools registered. Last error:", lastError);
-  } else {
-    console.info(`[WebMCP] Registered ${registered} tools`);
-  }
+  console.info(`[WebMCP] Registered ${registered}/${TOOLS.length} tools`);
   updateWebMCPBadge(registered);
 }
 
 function updateWebMCPBadge(registered) {
-  const dot  = document.getElementById("webmcp-status-dot");
-  const text = document.getElementById("webmcp-status-text");
+  const dot = $("webmcp-status-dot");
+  const text = $("webmcp-status-text");
   _webmcpActive = registered > 0;
-  if (dot)  dot.className   = "status-dot" + (_webmcpActive ? " connected" : "");
-  if (text) text.textContent = _webmcpActive ? `WebMCP · ${registered} tools` : "WebMCP · inactive";
+  if (dot) {
+    dot.className = "status-dot";
+    if (_webmcpActive) dot.classList.add("connected");
+  }
+  if (text) {
+    text.textContent = _webmcpActive ? `WebMCP · ${registered} tools` : "WebMCP · inactive";
+  }
 }
 
-// ── Tool call log ─────────────────────────────────────────────────────────────
+// Tool call log
 
 function appendToolLog(entry) {
   entry.id = ++_toolLogId;
   state.toolLog.unshift(entry);
   if (state.toolLog.length > 50) state.toolLog.pop();
 
-  const badge = document.getElementById("tool-log-badge");
+  const badge = $("tool-log-badge");
   if (badge) {
     badge.textContent = state.toolLog.length;
     badge.hidden = false;
   }
 
-  const list = document.getElementById("tool-log-list");
-  const body = document.getElementById("log-body");
+  const list = $("tool-log-list");
+  const body = $("log-body");
+  if (!list || !body) return;
 
-  if (state.toolLog.length === 1 && body?.hidden) {
+  if (state.toolLog.length === 1 && body.hidden) {
     body.hidden = false;
-    document.getElementById("log-toggle")?.setAttribute("aria-expanded", "true");
-    const chevron = document.getElementById("log-chevron");
+    $("log-toggle")?.setAttribute("aria-expanded", "true");
+    const chevron = $("log-chevron");
     if (chevron) chevron.textContent = "▲";
   }
 
-  if (list && body && !body.hidden) {
+  if (!body.hidden) {
     list.insertBefore(createLogEntryEl(entry), list.firstChild);
   }
 }
@@ -943,29 +921,26 @@ async function replayToolCall(entry) {
   }
 }
 
-// ── Chat ──────────────────────────────────────────────────────────────────────
+// Chat
 
 function clearChatHistory() {
   chatState.convMsgs = [];
-  document.getElementById("chat-messages").innerHTML = "";
+  $("chat-messages").innerHTML = "";
 }
 
 function resetChatBusy() {
   chatState.abortCtrl?.abort();
   chatState.busy = false;
   chatState.abortCtrl = null;
-  document.getElementById("chat-send").disabled = false;
-  document.getElementById("chat-abort").hidden = true;
+  $("chat-send").disabled = false;
+  $("chat-abort").hidden = true;
 }
 
-const GITHUB_CLIENT_ID = "Ov23lioKDt8Os7hdiSEh";
-const CORS_PROXY_URL = "https://cors-proxy.jonasneves.workers.dev";
-const OAUTH_CALLBACK_ORIGIN = "https://neevs.io";
 
 const chatState = {
   provider: "anthropic",
   model: "claude-sonnet-4-6",
-  claudeKey: (window.DASHBOARD_CONFIG?.anthropicApiKey) || localStorage.getItem("webmcp-claude-key") || "",
+  claudeKey: window.DASHBOARD_CONFIG?.anthropicApiKey || localStorage.getItem("webmcp-claude-key") || "",
   githubAuth: JSON.parse(localStorage.getItem("webmcp-gh-auth") || "null"),
   convMsgs: [],
   abortCtrl: null,
@@ -973,10 +948,10 @@ const chatState = {
 };
 
 function initChat() {
-  const keyInput = document.getElementById("chat-api-key");
+  const keyInput = $("chat-api-key");
   keyInput.value = chatState.claudeKey;
 
-  const sel = document.getElementById("chat-model-select");
+  const sel = $("chat-model-select");
   const saved = localStorage.getItem("webmcp-chat-model") || "anthropic:claude-sonnet-4-6";
   sel.value = saved;
   applyModelSelection(saved);
@@ -987,34 +962,33 @@ function initChat() {
     clearChatHistory();
   });
 
-  document.getElementById("chat-key-save").addEventListener("click", () => {
+  $("chat-key-save").addEventListener("click", () => {
     chatState.claudeKey = keyInput.value.trim();
     localStorage.setItem("webmcp-claude-key", chatState.claudeKey);
     toast("API key saved", "ok");
   });
 
-  document.getElementById("chat-send").addEventListener("click", sendChatMsg);
-  document.getElementById("chat-input").addEventListener("keydown", (e) => {
+  $("chat-send").addEventListener("click", sendChatMsg);
+  $("chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendChatMsg();
     }
   });
-  document.getElementById("chat-abort").addEventListener("click", () => chatState.abortCtrl?.abort());
-  document.getElementById("chat-clear").addEventListener("click", clearChatHistory);
+  $("chat-abort").addEventListener("click", () => chatState.abortCtrl?.abort());
+  $("chat-clear").addEventListener("click", clearChatHistory);
   document.addEventListener("keydown", (e) => {
-    const panel = document.getElementById("chat-panel");
-    if (!panel || panel.hidden) return;
+    if ($("chat-panel")?.hidden) return;
     if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
     const active = document.activeElement;
     if (active?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(active?.tagName)) return;
-    const chatInput = document.getElementById("chat-input");
+    const chatInput = $("chat-input");
     if (chatInput && !chatInput.disabled) chatInput.focus();
   });
 
-  document.getElementById("chat-panel-toggle").addEventListener("click", () => {
-    const panel = document.getElementById("chat-panel");
-    const btn = document.getElementById("chat-panel-toggle");
+  $("chat-panel-toggle").addEventListener("click", () => {
+    const panel = $("chat-panel");
+    const btn = $("chat-panel-toggle");
     const open = panel.hidden;
     panel.hidden = !open;
     btn.setAttribute("aria-expanded", String(open));
@@ -1026,83 +1000,14 @@ function applyModelSelection(value) {
   const [provider, ...rest] = value.split(":");
   chatState.provider = provider;
   chatState.model = rest.join(":");
-  document.getElementById("chat-claude-bar").style.display = provider === "anthropic" ? "" : "none";
-  document.getElementById("chat-github-bar").style.display = provider === "github" ? "" : "none";
-  document.getElementById("github-notice").hidden = provider !== "github" || !!localStorage.getItem("webmcp-github-notice-dismissed");
+  $("chat-claude-bar").hidden = provider !== "anthropic";
+  $("chat-github-bar").hidden = provider !== "github";
+  $("github-notice").hidden = provider !== "github" || !!localStorage.getItem("webmcp-github-notice-dismissed");
   if (provider === "github") updateGitHubAuthBar();
 }
 
-async function exchangeGitHubToken(code, redirectUri) {
-  const res = await fetch(`${CORS_PROXY_URL}/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, code, redirect_uri: redirectUri }),
-  });
-  const data = await res.json();
-  if (data.error || !data.access_token) {
-    throw new Error(data.error_description || data.error || "Token exchange failed");
-  }
-  let username = data.username;
-  if (!username) {
-    const userRes = await fetch("https://api.github.com/user", {
-      headers: { Authorization: `Bearer ${data.access_token}`, Accept: "application/vnd.github+json" },
-    });
-    if (userRes.ok) username = (await userRes.json()).login;
-  }
-  return { token: data.access_token, username: username || "" };
-}
-
-async function connectGitHub() {
-  const redirectUri = OAUTH_CALLBACK_ORIGIN + "/";
-
-  const authUrl = new URL("https://github.com/login/oauth/authorize");
-  authUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("state", crypto.randomUUID());
-  authUrl.searchParams.set("scope", "read:user");
-
-  const width = 500, height = 600;
-  const left = window.screenX + (window.innerWidth - width) / 2;
-  const top = window.screenY + (window.innerHeight - height) / 2;
-
-  return new Promise((resolve, reject) => {
-    const popup = window.open(
-      authUrl.toString(), "github-oauth",
-      `width=${width},height=${height},left=${left},top=${top},popup=yes`
-    );
-    if (!popup) {
-      reject(new Error("Popup blocked — allow popups for this site"));
-      return;
-    }
-
-    const handleMessage = async (event) => {
-      if (event.origin !== OAUTH_CALLBACK_ORIGIN) return;
-      const { type, code, error } = event.data || {};
-      if (type !== "oauth-callback") return;
-      window.removeEventListener("message", handleMessage);
-      clearInterval(pollTimer);
-      if (error) { reject(new Error(error)); return; }
-      if (!code) { reject(new Error("No code received")); return; }
-      try {
-        resolve(await exchangeGitHubToken(code, redirectUri));
-      } catch (err) {
-        reject(err);
-      }
-    };
-
-    window.addEventListener("message", handleMessage);
-    const pollTimer = setInterval(() => {
-      if (popup.closed) {
-        clearInterval(pollTimer);
-        window.removeEventListener("message", handleMessage);
-        reject(new Error("OAuth flow cancelled"));
-      }
-    }, 500);
-  });
-}
-
 function updateGitHubAuthBar() {
-  const bar = document.getElementById("chat-github-bar");
+  const bar = $("chat-github-bar");
   if (!bar) return;
   bar.innerHTML = "";
   if (chatState.githubAuth) {
@@ -1128,7 +1033,7 @@ function updateGitHubAuthBar() {
       connectBtn.textContent = "Connecting…";
       connectBtn.disabled = true;
       try {
-        chatState.githubAuth = await connectGitHub();
+        chatState.githubAuth = await connectGitHub('read:user', 'mqtt-ai');
         localStorage.setItem("webmcp-gh-auth", JSON.stringify(chatState.githubAuth));
         updateGitHubAuthBar();
       } catch (err) {
@@ -1148,17 +1053,21 @@ function getSystemPrompt() {
   ];
   if (isConnected()) {
     lines.push(`Connected to MQTT broker at ${state.url}.`);
-    const topics = state.seenTopics;
-    const preview = topics.slice(0, 20).join(", ");
-    lines.push(`Known topics (${topics.length}): ${preview}${topics.length > 20 ? "…" : ""}`);
+    const preview = state.seenTopics.slice(0, 20).join(", ");
+    const ellipsis = state.seenTopics.length > 20 ? "…" : "";
+    lines.push(`Known topics (${state.seenTopics.length}): ${preview}${ellipsis}`);
   } else {
-    const inputUrl = document.getElementById("url-input")?.value?.trim();
+    const inputUrl = $("url-input")?.value?.trim();
     const urlHint = inputUrl ? ` The URL currently configured in the dashboard is: ${inputUrl}.` : "";
     lines.push(`Not connected to MQTT broker.${urlHint} Call connect_to_broker to connect — do not ask the user for the URL unless it is missing.`);
   }
-  if (state.selected) lines.push(`User is currently viewing topic "${state.selected.name}".`);
-  lines.push("Publish payloads as plain strings (e.g. 'true', 'false', '42') or JSON strings.");
-  lines.push("Use the provided tools to answer questions and control the robot. Be concise.");
+  if (state.selected) {
+    lines.push(`User is currently viewing topic "${state.selected.name}".`);
+  }
+  lines.push(
+    "Publish payloads as plain strings (e.g. 'true', 'false', '42') or JSON strings.",
+    "Use the provided tools to answer questions and control the robot. Be concise.",
+  );
   return lines.join("\n");
 }
 
@@ -1188,17 +1097,11 @@ async function chatExecuteToolCall(name, input) {
 }
 
 async function sendChatMsg() {
-  const input = document.getElementById("chat-input");
+  const input = $("chat-input");
   const text = input.value.trim();
   if (!text || chatState.busy) return;
 
-  let key;
-  if (chatState.provider === "github") {
-    key = chatState.githubAuth?.token;
-  } else {
-    key = chatState.claudeKey;
-  }
-
+  const key = chatState.provider === "github" ? chatState.githubAuth?.token : chatState.claudeKey;
   if (chatState.provider !== "local" && !key) {
     if (chatState.provider === "github") {
       toast("Connect GitHub above", "error");
@@ -1213,14 +1116,14 @@ async function sendChatMsg() {
   chatState.convMsgs.push({ role: "user", content: text });
   chatState.busy = true;
   chatState.abortCtrl = new AbortController();
-  document.getElementById("chat-send").disabled = true;
-  document.getElementById("chat-abort").hidden = false;
+  $("chat-send").disabled = true;
+  $("chat-abort").hidden = false;
   showChatSpinner();
 
   try {
     switch (chatState.provider) {
       case "local":
-        await runConversationLocal(chatState.abortCtrl.signal);
+        await runConversationClaude(null, chatState.abortCtrl.signal, LOCAL_PROXY_URL);
         break;
       case "github":
         await runConversationGitHub(key, chatState.abortCtrl.signal);
@@ -1235,30 +1138,20 @@ async function sendChatMsg() {
   }
 }
 
-// ── Local Claude proxy (personal account via OAuth) ───────────────────────────
+// Claude conversation
 
 const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
 
-async function runConversationLocal(signal) {
-  return runConversationClaude(null, signal, LOCAL_PROXY_URL);
-}
-
-// ── Claude conversation ───────────────────────────────────────────────────────
-
-function buildClaudeHeaders(apiKey) {
+async function fetchClaudeStream(apiKey, signal, url) {
   const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   if (apiKey) {
     headers["x-api-key"] = apiKey;
     headers["anthropic-dangerous-direct-browser-access"] = "true";
   }
-  return headers;
-}
-
-async function fetchClaudeStream(apiKey, signal, url) {
   const res = await fetch(url, {
     method: "POST",
     signal,
-    headers: buildClaudeHeaders(apiKey),
+    headers,
     body: JSON.stringify({
       model: chatState.model,
       max_tokens: 4096,
@@ -1334,7 +1227,7 @@ async function runConversationClaude(apiKey, signal, url = "https://api.anthropi
               const toolBlock = contentBlocks[contentBlocks.length - 1];
               try {
                 toolBlock.input = toolInput ? JSON.parse(toolInput) : {};
-              } catch { /* incomplete JSON from streaming, default to empty */
+              } catch {
                 toolBlock.input = {};
               }
               toolInput = "";
@@ -1391,14 +1284,15 @@ async function* parseSSEStream(body) {
     if (line.startsWith("event: ")) {
       currentEvent = line.slice(7).trim();
     } else if (line.startsWith("data: ") && currentEvent) {
-      // Skip non-JSON SSE data lines (e.g. keepalives)
-      try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch { /* non-JSON line, skip */ }
+      try {
+        yield { event: currentEvent, data: JSON.parse(line.slice(6)) };
+      } catch {}
       currentEvent = null;
     }
   }
 }
 
-// ── GitHub Models conversation ────────────────────────────────────────────────
+// GitHub Models conversation
 
 async function runConversationGitHub(token, signal) {
   while (true) {
@@ -1499,7 +1393,11 @@ async function runConversationGitHub(token, signal) {
 
     for (const tc of toolCalls) {
       let parsedArgs;
-      try { parsedArgs = JSON.parse(tc.arguments || "{}"); } catch { /* malformed args, default to empty */ parsedArgs = {}; }
+      try {
+        parsedArgs = JSON.parse(tc.arguments || "{}");
+      } catch {
+        parsedArgs = {};
+      }
       const result = await chatExecuteToolCall(tc.name, parsedArgs);
       updateChatToolCall(tc.id, result, parsedArgs);
       chatState.convMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
@@ -1513,24 +1411,26 @@ async function* parseOpenAIStream(body) {
     if (!line.startsWith("data: ")) continue;
     const payload = line.slice(6).trim();
     if (payload === "[DONE]") return;
-    try { yield JSON.parse(payload); } catch { /* malformed chunk, skip */ }
+    try {
+      yield JSON.parse(payload);
+    } catch {}
   }
 }
 
-// ── Chat UI helpers ───────────────────────────────────────────────────────────
+// Chat UI helpers
 
 function appendChatMsg(role, text) {
-  const container = document.getElementById("chat-messages");
+  const container = $("chat-messages");
   const el = document.createElement("div");
   el.className = `chat-msg chat-msg-${role}`;
   if (role === "assistant") {
     el.innerHTML = renderMarkdown(text);
   } else {
     el.textContent = text;
-  }
-  if (role === "user") {
-    const msgIndex = chatState.convMsgs.length; // convMsgs.push happens after this call
-    el.addEventListener("contextmenu", e => showMsgContextMenu(e, el, text, msgIndex));
+    if (role === "user") {
+      const msgIndex = chatState.convMsgs.length; // convMsgs.push happens after this call
+      el.addEventListener("contextmenu", e => showMsgContextMenu(e, el, text, msgIndex));
+    }
   }
   container.appendChild(el);
   scrollChatBottom();
@@ -1547,7 +1447,7 @@ function truncateConvAt(msgEl, msgIndex) {
 
 function showMsgContextMenu(e, msgEl, text, msgIndex) {
   e.preventDefault();
-  document.getElementById("chat-ctx-menu")?.remove();
+  $("chat-ctx-menu")?.remove();
 
   const menu = document.createElement("div");
   menu.id = "chat-ctx-menu";
@@ -1560,7 +1460,6 @@ function showMsgContextMenu(e, msgEl, text, msgIndex) {
   menu.style.top  = `${e.clientY}px`;
   document.body.appendChild(menu);
 
-  // Nudge back on-screen if clipped
   const r = menu.getBoundingClientRect();
   if (r.right  > window.innerWidth)  menu.style.left = `${e.clientX - r.width}px`;
   if (r.bottom > window.innerHeight) menu.style.top  = `${e.clientY - r.height}px`;
@@ -1570,7 +1469,7 @@ function showMsgContextMenu(e, msgEl, text, msgIndex) {
     if (!action) return;
     menu.remove();
     truncateConvAt(msgEl, msgIndex);
-    const input = document.getElementById("chat-input");
+    const input = $("chat-input");
     input.value = text;
     if (action === "resend") {
       sendChatMsg();
@@ -1588,26 +1487,22 @@ function showMsgContextMenu(e, msgEl, text, msgIndex) {
 }
 
 function nextGptModel() {
-  const sel = document.getElementById("chat-model-select");
+  const sel = $("chat-model-select");
   const opts = Array.from(sel.options);
-  const current = `${chatState.provider}:${chatState.model}`;
-  const idx = opts.findIndex(o => o.value === current);
-  for (let i = idx + 1; i < opts.length; i++) {
-    if (opts[i].value.startsWith("github:openai/gpt")) return opts[i];
-  }
-  return null;
+  const idx = opts.findIndex(o => o.value === sel.value);
+  return opts.slice(idx + 1).find(o => o.value.startsWith("github:openai/gpt")) || null;
 }
 
 function appendRateLimitMsg() {
   const next = nextGptModel();
-  const container = document.getElementById("chat-messages");
+  const container = $("chat-messages");
   const el = document.createElement("div");
   el.className = "chat-msg chat-msg-error";
   if (next) {
     el.innerHTML = `Rate limit reached. <a href="#" class="chat-rate-limit-link">Switch to ${escHtml(next.text)}</a>`;
     el.querySelector("a").addEventListener("click", e => {
       e.preventDefault();
-      const sel = document.getElementById("chat-model-select");
+      const sel = $("chat-model-select");
       sel.value = next.value;
       localStorage.setItem("webmcp-chat-model", next.value);
       applyModelSelection(next.value);
@@ -1621,7 +1516,7 @@ function appendRateLimitMsg() {
 }
 
 function appendChatToolCall(toolId, toolName) {
-  const container = document.getElementById("chat-messages");
+  const container = $("chat-messages");
   const el = document.createElement("details");
   el.className = "chat-tool-call";
   el.dataset.toolId = toolId;
@@ -1641,24 +1536,25 @@ function appendChatToolCall(toolId, toolName) {
 function updateChatToolCall(toolId, result, params) {
   const el = document.querySelector(`.chat-tool-call[data-tool-id="${CSS.escape(toolId)}"]`);
   if (!el) return;
-  const status = el.querySelector(".chat-tool-call-status");
-  const subtitle = el.querySelector(".chat-tool-call-subtitle");
-  const body = el.querySelector(".chat-tool-call-body");
   const isError = !!result?.error;
-  if (status) {
-    status.textContent = isError ? "error" : "done";
-    status.className = `chat-tool-call-status ${isError ? "error" : "ok"}`;
+
+  const statusEl = el.querySelector(".chat-tool-call-status");
+  if (statusEl) {
+    statusEl.textContent = isError ? "error" : "done";
+    statusEl.className = "chat-tool-call-status " + (isError ? "error" : "ok");
   }
-  if (subtitle && params) {
-    const key = params.topic || params.url || "";
-    if (key) subtitle.textContent = key;
-  }
-  if (body) body.textContent = JSON.stringify(result, null, 2);
+
+  const subtitleEl = el.querySelector(".chat-tool-call-subtitle");
+  const key = params?.topic || params?.url || "";
+  if (subtitleEl && key) subtitleEl.textContent = key;
+
+  const bodyEl = el.querySelector(".chat-tool-call-body");
+  if (bodyEl) bodyEl.textContent = JSON.stringify(result, null, 2);
 }
 
 function showChatSpinner() {
   hideChatSpinner();
-  const container = document.getElementById("chat-messages");
+  const container = $("chat-messages");
   const el = document.createElement("div");
   el.className = "chat-spinner";
   el.id = "chat-spinner";
@@ -1668,7 +1564,7 @@ function showChatSpinner() {
 }
 
 function hideChatSpinner() {
-  document.getElementById("chat-spinner")?.remove();
+  $("chat-spinner")?.remove();
 }
 
 function handleStreamError(err, prefix = "") {
@@ -1679,7 +1575,7 @@ function handleStreamError(err, prefix = "") {
 }
 
 function scrollChatBottom() {
-  const el = document.getElementById("chat-messages");
+  const el = $("chat-messages");
   if (el) el.scrollTop = el.scrollHeight;
 }
 
@@ -1696,36 +1592,33 @@ function renderMarkdown(text) {
   return DOMPurify.sanitize(marked.parse(text));
 }
 
-// ── Init ───────────────────────────────────────────────────────────────────────
+// Init
 
-document.getElementById("topbar-home-btn").addEventListener("click", () => {
+$("topbar-home-btn").addEventListener("click", () => {
   state.selected = null;
   renderSidebar();
   renderMainPlaceholder();
 });
 
-document.getElementById("connect-btn").addEventListener("click", () => {
+$("connect-btn").addEventListener("click", () => {
   if (state.connected) {
     state.manualDisconnect = true;
     cancelReconnect();
     state.mqttClient?.end(true);
     return;
   }
-  const url = document.getElementById("url-input").value.trim();
-  if (url) {
-    cancelReconnect();
-    connect(url);
-  }
+  const url = $("url-input").value.trim();
+  if (url) connect(url);
 });
 
-document.getElementById("url-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") document.getElementById("connect-btn").click();
+$("url-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("connect-btn").click();
 });
 
-// ── Broker presets popover ────────────────────────────────────────────────────
+// Broker presets popover
 
-const presetsBtn     = document.getElementById("url-presets-btn");
-const presetsPopover = document.getElementById("url-presets-popover");
+const presetsBtn = $("url-presets-btn");
+const presetsPopover = $("url-presets-popover");
 
 presetsBtn.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -1734,17 +1627,17 @@ presetsBtn.addEventListener("click", (e) => {
 
 presetsPopover.querySelectorAll(".url-preset-item").forEach(item => {
   item.addEventListener("click", () => {
-    document.getElementById("url-input").value = item.dataset.url;
+    $("url-input").value = item.dataset.url;
     presetsPopover.hidden = true;
   });
 });
 
-document.getElementById("sidebar-filter").addEventListener("input", (e) => {
+$("sidebar-filter").addEventListener("input", (e) => {
   state.filter = e.target.value;
   renderSidebar();
 });
 
-document.getElementById("topic-add-input").addEventListener("keydown", (e) => {
+$("topic-add-input").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   const topic = e.target.value.trim();
   if (!topic) return;
@@ -1763,36 +1656,34 @@ for (const btn of document.querySelectorAll("[data-section]")) {
   });
 }
 
-document.getElementById("github-notice-dismiss").addEventListener("click", () => {
+$("github-notice-dismiss").addEventListener("click", () => {
   localStorage.setItem("webmcp-github-notice-dismissed", "1");
-  document.getElementById("github-notice").hidden = true;
+  $("github-notice").hidden = true;
 });
 
-document.getElementById("log-toggle").addEventListener("click", () => {
-  const body = document.getElementById("log-body");
-  const toggle = document.getElementById("log-toggle");
-  const chevron = document.getElementById("log-chevron");
-  const willExpand = body.hidden;
-  body.hidden = !willExpand;
-  toggle.setAttribute("aria-expanded", String(willExpand));
-  chevron.textContent = willExpand ? "▲" : "▼";
+$("log-toggle").addEventListener("click", () => {
+  const body = $("log-body");
+  const expanding = body.hidden;
+  body.hidden = !expanding;
+  $("log-toggle").setAttribute("aria-expanded", String(expanding));
+  $("log-chevron").textContent = expanding ? "▲" : "▼";
 
-  if (willExpand) {
-    const list = document.getElementById("tool-log-list");
+  if (expanding) {
+    const list = $("tool-log-list");
     list.innerHTML = "";
     for (const entry of state.toolLog) list.appendChild(createLogEntryEl(entry));
   }
 });
 
 function initTopicPrefix() {
-  const input = document.getElementById("topic-prefix-input");
+  const input = $("topic-prefix-input");
   input.value = state.topicPrefix;
-  document.getElementById("topic-prefix-save").addEventListener("click", () => {
-    let val = input.value.trim();
-    if (val && !val.endsWith("/")) val += "/";
-    input.value = val;
-    state.topicPrefix = val;
-    localStorage.setItem("webmcp-topic-prefix", val);
+  $("topic-prefix-save").addEventListener("click", () => {
+    const val = input.value.trim();
+    const normalized = val && !val.endsWith("/") ? val + "/" : val;
+    input.value = normalized;
+    state.topicPrefix = normalized;
+    localStorage.setItem("webmcp-topic-prefix", normalized);
     toast("Prefix saved — reconnect to apply", "ok");
   });
 }
@@ -1801,10 +1692,10 @@ registerWebMCPTools();
 initChat();
 initTopicPrefix();
 
-// ── WebMCP tools popover ───────────────────────────────────────────────────────
+// WebMCP tools popover
 
-document.getElementById("webmcp-status-row").addEventListener("click", () => {
-  const popover = document.getElementById("webmcp-tools-popover");
+$("webmcp-status-row").addEventListener("click", () => {
+  const popover = $("webmcp-tools-popover");
   if (!popover) return;
   if (!popover.hidden) { popover.hidden = true; return; }
 
@@ -1840,10 +1731,10 @@ document.getElementById("webmcp-status-row").addEventListener("click", () => {
   popover.hidden = false;
 });
 
-// ── Settings popover ──────────────────────────────────────────────────────────
+// Settings popover
 
-const settingsBtn     = document.getElementById("settings-btn");
-const settingsPopover = document.getElementById("settings-popover");
+const settingsBtn = $("settings-btn");
+const settingsPopover = $("settings-popover");
 
 settingsBtn.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -1852,12 +1743,12 @@ settingsBtn.addEventListener("click", (e) => {
   settingsBtn.setAttribute("aria-expanded", String(opening));
 });
 
-// ── Theme toggle ──────────────────────────────────────────────────────────────
+// Theme toggle
 
 const _darkMq = window.matchMedia("(prefers-color-scheme: dark)");
 
-function resolveTheme(preference) {
-  if (preference === "dark" || preference === "light") return preference;
+function resolveTheme(pref) {
+  if (pref === "dark" || pref === "light") return pref;
   return _darkMq.matches ? "dark" : "light";
 }
 
@@ -1880,22 +1771,20 @@ document.querySelectorAll(".theme-opt").forEach(btn => {
 
 applyTheme(localStorage.getItem("webmcp-theme") || "system");
 
-// ── Chat model label ──────────────────────────────────────────────────────────
+// Chat model label
 
 function updateChatModelLabel() {
-  const sel = document.getElementById("chat-model-select");
-  const label = document.getElementById("chat-model-label");
+  const sel = $("chat-model-select");
+  const label = $("chat-model-label");
   if (!sel || !label) return;
-  const opt = sel.options[sel.selectedIndex];
-  const text = opt?.text || "";
-  // Show just the model name, not the provider prefix
-  label.textContent = text.replace(/^GitHub · /, "").replace(/^Claude /, "");
+  const text = sel.options[sel.selectedIndex]?.text || "";
+  label.textContent = text.replace(/^(?:GitHub · |Claude )/, "");
 }
 
-document.getElementById("chat-model-select").addEventListener("change", updateChatModelLabel);
+$("chat-model-select").addEventListener("change", updateChatModelLabel);
 updateChatModelLabel();
 
-// ── Close all popovers on outside click or Escape ────────────────────────────
+// Close all popovers on outside click or Escape
 
 function closeAllPopovers(except) {
   if (except !== "presets") presetsPopover.hidden = true;
@@ -1904,23 +1793,22 @@ function closeAllPopovers(except) {
     settingsBtn.setAttribute("aria-expanded", "false");
   }
   if (except !== "webmcp") {
-    const wmcp = document.getElementById("webmcp-tools-popover");
+    const wmcp = $("webmcp-tools-popover");
     if (wmcp) wmcp.hidden = true;
   }
 }
 
 document.addEventListener("click", (e) => {
-  let except = null;
-  if (e.target.closest(".url-wrap")) except = "presets";
-  else if (e.target.closest(".settings-wrap")) except = "settings";
-  else if (e.target.closest("#webmcp-status-wrap")) except = "webmcp";
-  closeAllPopovers(except);
+  const target = e.target;
+  if (target.closest(".url-wrap")) return closeAllPopovers("presets");
+  if (target.closest(".settings-wrap")) return closeAllPopovers("settings");
+  if (target.closest("#webmcp-status-wrap")) return closeAllPopovers("webmcp");
+  closeAllPopovers();
 });
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeAllPopovers();
 });
 
-// Restore saved URL into input and auto-connect on load
-document.getElementById("url-input").value = state.url;
+$("url-input").value = state.url;
 connect(state.url);

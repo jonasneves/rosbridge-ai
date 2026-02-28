@@ -6,8 +6,8 @@
   --border-strong: #bbb8b0;
   --text-rgb: 26, 25, 23;
   --text: #1a1917;
-  --text-secondary: rgba(var(--text-rgb), 0.60);
-  --text-muted: rgba(var(--text-rgb), 0.58);
+  --text-secondary: rgba(var(--text-rgb), 0.60); /* labels, descriptions */
+  --text-muted: rgba(var(--text-rgb), 0.58);      /* headings, hints (dark mode widens to 0.38) */
   --accent: #2d6a4f;
   --accent-hover: #1b4332;
   --accent-light: #d8f3dc;
@@ -319,7 +319,13 @@ button.status-row:hover {
 
 .settings-section:last-child { border-bottom: none; }
 
-.settings-section-label {
+/* Shared section-heading typography (used across sidebar, settings, log, popovers) */
+.settings-section-label,
+.sidebar-heading,
+.sidebar-ns-header,
+.log-toggle-label,
+.section-label,
+.webmcp-popover-divider {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -332,13 +338,15 @@ button.status-row:hover {
   gap: 6px;
 }
 
-.settings-hint {
+.settings-hint,
+.webmcp-popover-explain {
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.5;
 }
 
-.settings-hint code {
+.settings-hint code,
+.webmcp-popover-explain code {
   font-family: var(--font-mono);
   font-size: 10px;
   background: var(--surface-raised);
@@ -405,7 +413,6 @@ button.status-row:hover {
 .chat-model-label::before {
   content: "·";
   margin-right: 6px;
-  color: var(--text-muted);
 }
 
 /* ── Sidebar ── */
@@ -487,11 +494,6 @@ button.status-row:hover {
   border: none;
   cursor: pointer;
   text-align: left;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
   padding: 6px 14px;
 }
 
@@ -541,7 +543,6 @@ button.status-row:hover {
   background: none;
   border: none;
   cursor: pointer;
-  border-radius: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -628,11 +629,6 @@ button.status-row:hover {
   background: none;
   border: none;
   padding: 5px 8px 3px 14px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
   cursor: pointer;
   text-align: left;
   font-family: var(--font);
@@ -678,8 +674,6 @@ button.status-row:hover {
 
 .sidebar-item-row.flash-new { animation: row-flash 0.5s ease-out; }
 
-/* ── WebMCP badge ── */
-
 /* ── Tools popover (WebMCP) ── */
 
 .tools-popover {
@@ -713,26 +707,7 @@ button.status-row:hover {
   margin-bottom: 5px;
 }
 
-.webmcp-popover-explain {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
-.webmcp-popover-explain code {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  background: var(--surface-raised);
-  border-radius: 2px;
-  padding: 1px 3px;
-}
-
 .webmcp-popover-divider {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
   padding: 6px 12px 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -941,11 +916,6 @@ button.status-row:hover {
 }
 
 .section-label {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
   margin-bottom: 6px;
 }
 
@@ -1115,11 +1085,6 @@ button.status-row:hover {
   color: #fff;
 }
 
-/* Dark mode: vivid accent (#3fcf82) is bright green — near-black text gives 11:1 contrast.
-   Light mode: dark accent (#2d6a4f) uses white text (6.2:1) defined in .btn-primary / .chat-send-btn above. */
-[data-theme="dark"] .btn-primary,
-[data-theme="dark"] .chat-send-btn { color: #0c2318; }
-
 .btn-primary:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
@@ -1201,10 +1166,6 @@ button.status-row:hover {
 }
 
 .log-toggle-label {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   flex: 1;
 }
 
@@ -1219,7 +1180,6 @@ button.status-row:hover {
   font-weight: 600;
   padding: 1px 6px;
   border-radius: var(--radius);
-  letter-spacing: 0;
 }
 
 .log-body {
@@ -1328,7 +1288,7 @@ button.status-row:hover {
    Both selectors share identical variable values — keep them in sync. */
 
 @media (prefers-color-scheme: dark) {
-  /* [dark-vars] duplicated below in html[data-theme="dark"] — keep in sync */
+  /* [dark-vars-A] must match [dark-vars-B] below */
   :root:not([data-theme]) {
     --text-rgb: 237, 233, 227;
     --bg: #191c19;
@@ -1349,7 +1309,7 @@ button.status-row:hover {
   }
 }
 
-/* [dark-vars] duplicated above in @media (prefers-color-scheme: dark) — keep in sync */
+/* [dark-vars-B] must match [dark-vars-A] above */
 html[data-theme="dark"] {
   --text-rgb: 237, 233, 227;
   --bg: #191c19;
@@ -1388,6 +1348,11 @@ html[data-theme="dark"] {
 }
 
 [data-theme="dark"] .github-notice-dismiss { color: #fbbf24; }
+
+/* Bright accent (#3fcf82) needs dark text for 11:1 contrast;
+   light mode uses white text on dark green (#2d6a4f) at 6.2:1. */
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .chat-send-btn { color: #0c2318; }
 
 /* ── Chat panel ── */
 
